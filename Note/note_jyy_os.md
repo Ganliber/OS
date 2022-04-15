@@ -232,6 +232,11 @@ API示例
 
 ## P4 多处理器编程 ：入门到放弃
 
+### 总结
+
+* 不要自作主张写”聪明“的并发程序
+* 老老实实使用久经考验的API
+
 ### 入门
 
 #### 并发
@@ -339,20 +344,81 @@ API示例
     }
     ```
 
-    注解（下方代码可能与最新版本的`threads.h`不太一样）：
+    视频版本
 
+    ```C
+    #include <stdlib.h>
+    #include <stdio.h>
+    #include <string.h>
+    #include <stdatomic.h>
+    #include <assert.h>
+    #include <unistd.h>
+    #include <pthread.h>
+    
+    enum { T_FREE = 0, T_LIVE, T_DEAD, };
+    struct thread {
+      int id;
+      pthread_t thread;
+      void (*entry)(int);
+      struct thread *next;
+    };
+    
+    struct thread *threads; //Header of list
+    
+    void (*join_fn)(); //callback
+    
+    // =============== Basics =================== //
+    
+    __attribute__((destructor)) static void join_all(){
+      for(struct thread *next;threads;threads=next)
+      {
+        pthread_join(threads->thread,NULL);
+        next = threads->next;
+        free(threads);
+      }
+      join_fn ? join_fn() : (void)0;
+    }
+    
+    static inline void *entry_all(void *arg)
+    {
+      struct thread *thread = (struct thread *)arg;
+      thread->entry(thread->id);
+      return NULL;
+    }
+    
+    static inline void create(void *fn)
+    {
+      struct thread *cur = (struct thread *)malloc(sizeof(struct thread));
+      assert(cur);
+      cur->id = threads ? threads->id + 1 : 1;
+      cur->next = threads;
+      cur->entry = (void (*)(int))fn;
+      threads = cur;
+      pthread_create(&cur->thread, NULL, entry_all, cur);
+    }
+    
+    static inline void join(void (*fn)())
+    {
+      join_fn = fn;
+    }
+    ```
+    
+    
+    
+    注解（下方代码可能与最新版本的`threads.h`不太一样）：
+    
     * `create(fn)	p.s.fn is a function pointer`
     
       * 创建并运行一个线程，立即执行函数`fn`
       * 函数原型`void fn(int tid){}`
       * tid从1开始编号
-
+    
     * `join(fn)`
     
       * 等待所有线程执行结束
       * 执行函数fn
       * 假定只能`join`一次
-
+    
     * 数据结构(由于注释颜色较浅就用---代替了)
     
       ```C
@@ -365,7 +431,7 @@ API示例
       struct thread *threads; --- 链表头
       void (*join_fn)(); --- callback
       ```
-
+    
     * 线程的创建
     
       ```C++
@@ -438,6 +504,71 @@ API示例
 
 ### 放弃
 
+#### 总结
+
+##### 放弃原因
+
+* C代码
+  * 编译器优化 --> 顺序的丧失 
+* 处理器执行（二进制文件）
+  * 中断 / 并行 --> 原子性(数据 独立性)的丧失
+  * 处理器处理二进制文件时会选择**乱序执行** --> 可见性的丧失
+
+##### 补救方法
+
+* 保证顺序
+
+  * 控制编译器行为，阻止编译优化
+
+    > 此处告诉编译器变量`i`的所有读写都不能被优化
+
+    ```C
+    void delay(){
+      for(volatile int i=0;i<DELAY_COUNT;i++)
+      {...}
+    }
+    ```
+
+  * 保证内存访问指令的顺序
+
+    > 防止两个`x++`被合并，`y`不能被移到`barrier`之前
+
+    ```C
+    extern x;
+    #define barrier() asm volatile ("":::"memory")
+    
+    void foo()
+    {
+      x++;
+      barrier();
+      x++; y++;
+    }
+    ```
+
+* 保证原子性
+
+  * 互斥 `mutual exclusion`
+
+    * 效果等效于
+
+      ```C
+      stop_the_world(); 
+      ... // critical section 临界区
+      resume_the_world();
+      ```
+
+      执行`stop_the_world()` , 整个系统所有其他线程暂停
+
+      执行 `resume_the_world()` , 系统中其他线程恢复
+
+* 保证可见性
+  * 基于`hardware`：通过指令集帮助实现
+    * 顺序指令
+      * fence (lfence, sfence, mfence, ...)
+    * 原子指令
+      * x86-family : lock prefix (lock xchg,...)
+      * rsicv/mips : load-reservation/store-conditional(mip)
+
 #### 放弃：原子性 `atomicity`
 
 * 原子性
@@ -460,7 +591,82 @@ API示例
 
   <img src="D:\github\OS\images\result-O012.png" alt="result-O012" style="zoom:50%;" />
 
-  不同的优化结果不同
+  不同的优化结果不同，具体查看其汇编代码
+
+  
+  
+  * O1优化等价
+  
+    ```C
+    t=sum;
+    for(i=0;i<n;i++){}//空循环
+    sum=t+n;
+    ```
+  
+    执行顺序[1.1]->[1.2] wait ...->[2.1]->[2.2] wait ...->[1.3]->[2.3]
+  
+    ```
+    P1
+    --------------------------------------
+    [1.1]t = sum                          
+    [1.2]for(i=0;i<n;i++){} //空循环等待此时会跳转到P2
+    [1.3]sum = t+n
+    P2
+    --------------------------------------
+    [2.1]t=sum
+    [2.2]for(i=0;i<n;i++){}
+    [2.3]sum = t+n
+    
+    所初始取到的t都是0,之后进入空循环
+    ```
+  
+  * O2优化等价
+  
+    ```C
+    sum = sum+n
+    ```
+  
+    由于高度优化，并发性可能性较低因此得到的结果是正确的
+  
+  ```assembly
+  === O0 ===
+  0000000000001376 <do_sum>:
+  1376:       f3 0f 1e fa             endbr64
+  137a:       55                      push   %rbp
+  137b:       48 89 e5                mov    %rsp,%rbp
+  137e:       c7 45 fc 00 00 00 00    movl   $0x0,-0x4(%rbp)
+  1385:       eb 16                   jmp    139d <do_sum+0x27>
+  1387:       48 8b 05 8a 2c 00 00    mov    0x2c8a(%rip),%rax        # 4018 <sum>
+  138e:       48 83 c0 01             add    $0x1,%rax
+  1392:       48 89 05 7f 2c 00 00    mov    %rax,0x2c7f(%rip)        # 4018 <sum>
+  1399:       83 45 fc 01             addl   $0x1,-0x4(%rbp)
+  139d:       81 7d fc ff e0 f5 05    cmpl   $0x5f5e0ff,-0x4(%rbp)
+  13a4:       7e e1                   jle    1387 <do_sum+0x11>
+  13a6:       90                      nop
+  13a7:       90                      nop
+  13a8:       5d                      pop    %rbp
+  13a9:       c3                      retq
+  
+  === O1 ===
+  0000000000001223 <do_sum>:
+  1223:       f3 0f 1e fa             endbr64
+  1227:       48 8b 15 ea 2d 00 00    mov    0x2dea(%rip),%rdx        # 4018 <sum>
+  122e:       b8 00 e1 f5 05          mov    $0x5f5e100,%eax
+  1233:       83 e8 01                sub    $0x1,%eax
+  1236:       75 fb                   jne    1233 <do_sum+0x10>
+  1238:       48 8d 82 00 e1 f5 05    lea    0x5f5e100(%rdx),%rax
+  123f:       48 89 05 d2 2d 00 00    mov    %rax,0x2dd2(%rip)        # 4018 <sum>
+  1246:       c3                      retq
+  
+  === O2 ===
+  00000000000012e0 <do_sum>:
+  12e0:       f3 0f 1e fa             endbr64
+  12e4:       48 81 05 29 2d 00 00    addq   $0x5f5e100,0x2d29(%rip)        # 4018 <sum>
+  12eb:       00 e1 f5 05
+  12ef:       c3                      retq 
+  ```
+  
+  
 
 #### 放弃：可见性
 
@@ -500,10 +706,9 @@ assert的作用是现计算表达式 expression ：如果其值为假（即为0�
 
   ```C
   void (*pfunc)(int); --- 函数指针pfunc指向的函数参数为int型,返回值为void型函数
-  int (*p)(int i,int j); ---funtion pointer p 指向参数为两个int型,返回值为int型的函数
-    
+  int (*p)(int i,int j); ---funtion pointer p 指向参数为两个int型,返回值为int型的函数 
   ```
-
+  
 * 赋值
 
   ```C++
@@ -661,13 +866,72 @@ cc是Unix下的，是收费的，可不向Linux那样可以那来随便用，所
 
 
 
+## P5 理解并发程序的执行
 
+### 串行(单线程)程序的状态机模型
 
+#### 有限状态机 
 
+> Finite State Machine (FSM)
 
+* 有向图 G(F,E)
 
+  * 节点 v ∈ V --> 状态
+  * 边 e ∈ E --> 状态的转换
 
+* 程序 <=> FSM
 
+  * OS上程序执行时，状态有限
+
+    * registers (including PC pointer)
+    * memory : code(text), data, stack
+
+  * 构造有限状态机
+
+    * 每个不同的 configuration (mem/register) 都是状态机的节点
+      * s = (M,R)∈V, 代表某个时刻程序mem/registers的快照`snapshot`
+      * 16MiB内存有2\^(2\^24)种不同的状态
+    * s = (M,R)的下一个状态是执行`M[R[%rip]]`处的指令得到的 s' = (M',R')
+      * 取出PC指针处的指令、译码、执行、写回数据
+      * **大部分**状态 s 有唯一的后续状态`deterministic`
+
+  * 不确定`non-deterministic`的指令可能有**多个后续状态**，
+
+    * (时间)`rdtsc/rdtscp`
+
+      * 获取处理器的"时间戳"用于精确定时
+
+    * (机器状态)`rdrand`
+
+      * 处理器自身提供的"真"随机数指令 `since Ivy Bridge, 2013`
+
+      * 例子`rdrand.c`，将`rdrand`的结果写到`val`中，将其返回结果打印到终端
+
+        ```C
+        #include <stdio.h>
+        #include <stdint.h>
+        int main()
+        {
+          uint64_t val;
+          asm volatile ("rdrand %0": "=r"(val));
+          printf("rdrand returns %016lx\n",val);
+        } 
+        ```
+
+        每次打印的结果不一致
+
+        <img src="D:\github\OS\images\rdrand.png" alt="rdrand" style="zoom:50%;" />
+
+    * (系统调用)syscall -->更多的不确定性
+
+      * 一般应用的不确定性来源
+      * 例：`read(fd, buf, size)`
+        * 返回值不确定(-1`read fail`, 0`file end`, 1`file bytes`, 2`file bytes`, ...)
+        * `buf` 中的数据不确定(从键盘输入)
+  
+* `x86-64`举例
+
+* 
 
 
 
