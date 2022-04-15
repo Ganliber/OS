@@ -6,6 +6,13 @@
 
 > [Linux Tools Quick Tutorial](https://linuxtools-rst.readthedocs.io/zh_CN/latest/tool/gdb.html?highlight=gdb)
 
+### 隐藏功能
+
+* `target record-full` 开始记录
+  * 之后可以`watch $rax`去检测其值，有新旧值
+* `target stop` 结束记录
+* `reverse-step/reverse-stepi` 时间旅行调试(反向执行) 
+
 ### 运行
 
 * `starti` : 在主函数入口处停下
