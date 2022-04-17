@@ -235,8 +235,10 @@
 
 
 
-## P7 代码：硬件眼里的操作系统
+## P7 代码：硬件眼里的操作系统(未完)
 
+> ！！！！！！！！！！暂时还无法实现完全理解！！！！！！！！！！
+>
 > 1. AbstractMachine
 > 2. 软硬件桥梁
 > 3. 操作系统：是个C程序
@@ -280,9 +282,66 @@
 * ar（静态库打包）, objcopy（目标文件解析）, ...
 * 其他工具：nm, strings, size, objdump, readelf, ...
 
+### Bare-Metal 与程序员的约定
+
+> 裸机（硬件）和程序员（软件编写者）的约定
+
+* 为了能运行我们的程序，硬软件的约定
+
+  > CPU reset 之后，从PC pointer 取指令，译码，执行...
+  >
+  > 从`firmware`开始执行，注意，`0xffff0`通常是一条向`firmware`跳转的`jmp`指令
+
+  * `CPU reset`（CPU复位）之后，处理器处于某个确定的状态
+
+    * PC pointer 指向一段 memory-mapped ROM
+      * ROM 储存量厂商提供的 firmware (固件)
+    * 处理器大部分特性处于关闭状态
+      * 缓存，虚拟储存，...
+
+  * `Firmware`
+
+    * 关于`firmware`:`BIOS` v.s. `UEFI`
+      * 都是主板/主板上外插设备的软件抽象
+        * 支持系统管理程序的运行
+      * BIOS 属于老式的版本，UEFI较为复杂
+      * Legacy BIOS ( Basic I/O System ) : legacy(译：旧版的，遗产)
+      * UEFI ( Unified Extensible Firmware Interface ) ：统一可扩展固件接口（英语：Unified Extensible Firmware Interface，缩写UEFI）是一种个人电脑系统规格，用来定义操作系统与系统固件之间的软件界面，作为BIOS的替代方案。 可扩展固件接口负责加电自检（POST）、联系操作系统以及提供连接操作系统与硬件的接口。
+    * 将用户数据加载到内存
+      * 储存介质上的第二级`loader`
+      * 或者直接加载操作系统`嵌入式系统`
+    * `U-Boot` : the universal boot loader
+      * 解释：固件`firmware`加载`U-Boot`, `U-boot`加载各种各样的操作系统
+
+  * Legacy BIOS : 约定
+
+    > Firmware 必须提供机制，将用户数据载入内存
+
+    * Legacy BIOS 把引导盘的第一个扇区（主引导扇区，MBR）加载到内存的`7c00`位置
+      * 处理器为`16-bit`
+      * 规定 CS:IP = 0x7c00
+
+### QEMU
+
+> 世界上应用最广泛的开源虚拟机
+
+* 传奇黑客，天才程序员 Fabrice Bellard 的杰作
+  * Android Virtual Device, Virtualbox, ...
+* `QEMU`, A fast and portable dynamic translator `USENIX ATC'05`
+  * `SeaBIOS` : QEMU `x86` 的默认 `firmware`
+    * SeaBIOS 会被编译成一个 `ELF`二进制文件 
+
+### 用脚本处理读取数据
+
+> 意识
+
 ### 本节知识补充
 
 
+
+## P8 并发控制 2 : 操作系统中的互斥
+
+> **xv6 spinlock** 
 
 
 

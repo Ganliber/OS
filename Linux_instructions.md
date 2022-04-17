@@ -2,6 +2,12 @@
 
 [TOC]
 
+## 简记
+
+### hexdump
+
+> 以16进制查看文件
+
 ## gdb
 
 > [Linux Tools Quick Tutorial](https://linuxtools-rst.readthedocs.io/zh_CN/latest/tool/gdb.html?highlight=gdb)
@@ -156,8 +162,6 @@ ps -ef | less
 26  ls
 ……省略……
 ```
-
-
 
 
 
