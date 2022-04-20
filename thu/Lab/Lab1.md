@@ -66,15 +66,13 @@
 
 > inline assembly instructions
 
-### Grammar
-
-#### 基本内联汇编
+### 基本内联汇编
 
 
 
-#### 扩展内联汇编
+### 扩展内联汇编
 
-##### `Grammar` : 
+#### `Grammar` :
 
 ```C
 Grammar 1:
@@ -94,7 +92,7 @@ Grammar 3:
 __asm__ __volatile__(...);
 ```
 
-##### `Tips` : 
+#### `Tips` :
 
 * "asm" 和 "\__asm__" 的含义是完全一样的,如果有多行汇编，则每一行都要加上 "\n\t"。其中的 “\n” 是换行符，"\t” 是 tab 符，在每条命令的 结束加这两个符号，是为了让 gcc 把内联汇编代码翻译成一般的汇编代码时能够保证换行和留有一定的空格。
 * 数字前加前缀 “％“，如％1，％2等表示使用寄存器的样板操作数。
@@ -112,7 +110,7 @@ __asm__ __volatile__(...);
   })
   ```
 
-##### `Output operand list` :
+#### `Output operand list` :
 
 > 1. 输出部分`output operand list`，用以规定对输出变量（目标操作数）如何与寄存器结合的约束（constraint）,输出部分可以有多个约束，**互相以逗号分开**。**每个约束以“＝”开头**，接着用一个字母来表示操作数的类型，然后是关于变量结合的约束。
 
@@ -140,19 +138,28 @@ __asm__ __volatile__(...);
 | S, D       | 寄存器esi或edi                                   |
 | I          | 常数（0～31）                                    |
 
-##### `Input operand list` :
+#### `Input operand list` :
 
 >1. 输入部分与输出部分相似，但没有“＝”。
+>2. 如果输入部分一个操作数所要求使用的寄存器，与前面输出部分某个约束所要求的是同一个寄存器，那就把对应操作数的编号（如“1”，“2”等）放在约束条件中。
 
 
 
-##### `clobber list` :
+#### `clobber list` :
 
 > 1. 也称为乱码列表
+> 2. 这部分常常以“memory”为约束条件，以表示操作完成后内存中的内容已有改变，如果原来某个寄存器的内容来自内存，那么现在内存中这个单元的内容已经改变。乱码列表通知编译器，有些寄存器或内存因内联汇编块造成乱码，可隐式地破坏了条件寄存器的某些位（字段）。
+
+1. 当输入部分存在，而输出部分不存在时，分号“：“要保留
+2. 当“memory”存在时，三个分号都要保留
+
+```C
+#define __cli() __asm__ __volatile__("cli": : :"memory")
+```
 
 
 
-### Example 1
+#### example 1
 
 Inline assembly (*.c)
 
@@ -193,7 +200,7 @@ movl 12(%esp), %eax
 movl %eax, %cr0
 ```
 
-### Example 2
+#### example 2
 
 Inline assembly
 
@@ -203,6 +210,167 @@ asm volatile("int $0x80"
             :"=a"(res)
             :"0"(11),"b"(arg1),"c"(arg2),"d"(arg3),"S"(arg4));
 ```
+
+1. `Output` : res <-- %eax
+
+2. `Input` : 注意输入行 `"0"`也表示eax
+
+   > 顺序：
+   >
+   > q 指示编译器从eax, ebx, ecx, edx分配寄存器
+   >
+   > r 指示编译器从eax, ebx, ecx, edx, esi, edi分配寄存器
+   >
+   > * 数字%n的用法：数字表示的寄存器是按照出现和从左到右的顺序映射到用"r"或"q"请求的寄存器．
+   >
+   > * 如果要重用"r"或"q"请求的寄存器的话，就可以使用它们。
+   > * 此处重用了`%eax`，因此根据上所示顺序, "0"即对应%eax
+
+   1. $11 -> %eax
+   2. arg1 -> %ebx
+   3. arg2 -> %ecx
+   4. arg3 -> %edx
+   5. arg4 -> %esi
+
+#### example 3
+
+Inline assembly
+
+```C
+   int count=1;
+    int value=1;
+    int buf[10];
+    void main()
+    {
+        asm(
+            "cld nt"
+            "rep nt"
+            "stosl"
+        :
+        : "c" (count), "a" (value) , "D" (buf[0])
+        : "%ecx","%edi"
+        );
+    }
+```
+
+1. 冒号后的语句依次指明输出`Output`，输入`Input`和被改变的寄存器`clobbers`。
+2. cld,rep,stos这几条语句的功能是向buf中写上count个value值。
+
+Assembly
+
+```assembly
+    movl count,%ecx
+    movl value,%eax
+    movl buf,%edi
+    #APP
+    cld
+    rep
+    stosl
+    #NO_APP
+```
+
+#### example 4
+
+> 可以让gcc自己选择合适的寄存器
+
+inline as 
+
+```C
+ asm("leal (%1,%1,4),%0"
+        : "=r" (x)
+        : "0" (x)
+    );
+```
+
+1. `Onput` : x <-- %eax
+2. `Iutput` : x --> %eax
+3. 注意顺序
+
+assmebly
+
+```assembly
+movl x,%eax
+#APP
+leal (%eax,%eax,4),%eax
+#NO_APP
+movl %eax,x
+```
+
+- [1] 使用q指示编译器从eax, ebx, ecx, edx分配寄存器。 使用r指示编译器从eax, ebx, ecx, edx, esi, edi分配寄存器。
+
+- [2] 不必把编译器分配的寄存器放入改变的寄存器列表，因为寄存器已经记住了它们。
+
+- [3] "="是标示输出寄存器，必须这样用。
+
+- [4] 数字%n的用法：数字表示的寄存器是按照出现和从左到右的顺序映射到用"r"或"q"请求的寄存器．如果要重用"r"或"q"请求的寄存器的话，就可以使用它们。
+
+- [5] 如果强制使用固定的寄存器的话，如不用%1，而用ebx，则：
+
+  ```
+    asm("leal (%%ebx,%%ebx,4),%0"
+        : "=r" (x)
+        : "0" (x) 
+    );
+  ```
+
+
+
+## x86的中断处理
+
+> 1. x86 中断源
+> 2. CPU和OS如何处理中断
+> 3. 能够对中断向量表（中断描述符表，IDT）初始化
+
+ 
+
+### x86中断处理：确定中断服务例程
+
+* 每个中断/异常与一个中断服务例程`ISR(Interrupt Service Routine)`关联，其关联关系储存在中断描述符表`IDT(Interrupt Descriptor Table)`
+* `IDT`的起始地址和大小保存在中断描述符表寄存器`IDTR`中
+  * `IDT`需要`OS`建立
+  * `IDTR`需要`OS`一个指令告诉`CPU`
+* `ucore`建立好两个表：GDT，IDT
+  * CPU基于这两个表将某次中断和相应的中断服务例程联系起来
+  * 异常/中断 ---> IDT ---> GDT ---> ISR
+* 段描述符会设定响应的特权级
+  * CS : 低两位描述特权级：00(内核态), 01, 10, 11(用户态)
+* 不同特权级的中断切换对堆栈的影响
+  * 内核态中断：中断处理仍在内核态
+  * 用户态中断：跳转到内核态处理中断（产生特权级变化）
+
+### x86中断处理：从中断服务例程返回
+
+* `iret`完成中断例程返回
+
+  * 弹出`eflags`和`ss/esp`(改变特权级就会改变栈，所以返回时要恢复ss和esp)
+
+  * 特权级变化情况下返回时弹出的内容:
+
+    EIP, CS, EFLAGS, ESP, SS
+
+* `ret` or `retf`函数调用返回 
+
+  * `ret`弹出`EIP`
+  * 远程跳转：`retf`弹出`CS`和`EIP`
+
+* 以上都是硬件实现的
+
+
+
+### x86的中断处理：系统调用
+
+* 用户程序通过系统调用访问`OS kernel`服务
+* 实现
+  * 指定中断号
+  * 使用 `trap`  (软中断)，Software generated interrupt
+  * 或者使用特殊指令`sysenter/sysexit`
+* 
+
+
+
+
+
+
 
 
 
