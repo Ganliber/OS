@@ -6,6 +6,10 @@
 
 
 
+# 知识准备
+
+
+
 ## x86启动顺序
 
 * register 初始值
@@ -364,7 +368,164 @@ movl %eax,x
   * 指定中断号
   * 使用 `trap`  (软中断)，Software generated interrupt
   * 或者使用特殊指令`sysenter/sysexit`
-* 
+
+
+
+
+
+# 代码
+
+
+
+## 练习一
+
+> 1. 操作系统镜像文件ucore.img是如何一步一步生成的？(需要比较详细地解释Makefile中每一条相关命令和命令参数的含义，以及说明命令导致的结果)
+> 2. 一个被系统认为是符合规范的硬盘主引导扇区的特征是什么？
+
+### 涉及内容
+
+* 外设：串口，并口，CGA，时钟，硬盘
+* Bootloader 软件
+* ucore OS 软件
+
+### 示例
+
+> 基于lab1_result
+
+* 执行
+
+  ```makefile
+  make clean
+  ```
+
+* 参数`"V="`使得编译执行的详细过程会展现出来
+
+  > 注意这个参数是`Makefile`自定义的不是make的内置参数
+
+  ```makefile
+  make V=
+  ```
+
+  
+
+### 环境变量
+
+> 查看`Makefile`内容
+
+#### makefile function 语法
+
+```makefile
+$(<function> <arguments>)
+or
+${<function> <arguments>}
+```
+
+* 这里， `<function>` 就是函数名，make支持的函数不多。
+*  `<arguments>` 为函数的参数，参数间以逗号 `,` 分隔，而函数名和参数之间以“空格”分隔。函数调用以 `$` 开头，以圆括号或花括号把函数名和参数括起。
+* 函数调用以 `$` 开头，以圆括号或花括号把函数名和参数括起。
+
+#### call 函数
+
+* call函数是唯一一个可以用来创建新的参数化的函数。你可以写一个非常复杂的表达式，这个表达式中，你可以定义许多参数，然后你可以call函数来向这个表达式传递参数。其语法是：
+
+  ```makefile
+  $(call <expression>,<parm1>,<parm2>,...,<parmn>)
+  ```
+
+  当make执行这个函数时， `<expression>` 参数中的变量，如 `$(1)` 、 `$(2)` 等，会被参数 `<parm1>` 、 `<parm2>` 、 `<parm3>` 依次取代。而 `<expression>` 的返回值就是 call 函数的返回值。例如：
+
+  ```makefile
+  reverse =  $(1) $(2)
+  
+  foo = $(call reverse,a,b)
+  ```
+
+  那么， `foo` 的值就是 `a b` 。当然，参数的次序是可以自定义的，不一定是顺序的，如：
+
+  ```makefile
+  reverse =  $(2) $(1)
+  
+  foo = $(call reverse,a,b)
+  ```
+
+  此时的 `foo` 的值就是 `b a` 。
+
+* 需要注意：在向 call 函数传递参数时要尤其注意**空格**的使用。call 函数在处理参数时，**第2个及其之后的参数中的空格会被保留，因而可能造成一些奇怪的效果**。因而在向call函数提供参数时，最安全的做法是去除所有多余的空格。
+
+
+
+
+
+### Makefile详解
+
+* **line-117** : 生成`libs`目录下的`obj`变量名
+
+  ```makefile
+  $(call add_files_cc,$(call listf_cc,$(LIBDIR)),libs,)
+  ```
+
+  1. 调用函数`add_file_cc`
+
+     输入参数：2个，第一个是调用函数`listf_cc`的返回值，第二个是目录`libs`
+
+  2. `listf_cc`函数定义为 line-89 处的
+
+     ```makefile
+      [89] listf_cc = $(call listf,$(1),$(CTYPE))
+     ```
+
+     listf的参数有2个，第一个是call listf_cc传入的参数，也就是`$(1) = $(LIBDIR) = `，第二个参数为`$(CTYPE)`
+
+  3. 
+
+
+
+
+
+* **line-136** :
+
+  ```makefile
+  $(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
+  ```
+
+  
+
+
+
+
+
+### Q1 ucore.img 的生成
+
+> 需要`kernel`和`bootblock`
+
+**示意图**
+
+> 基于`Makefile`流程
+
+```mermaid
+flowchart LR
+    tools -->| sign.c | O1[bin/sign]
+   
+    boot -->| -r *.c, *.S | O2[*.o]
+    	O2 --> | ld | P2[bin/bootblock.out]
+    	P2 --> tmp2( )
+    	
+    O1 --> tmp2
+    tmp2 --> Q1(bin/bootblock :512bytes)
+    
+    kern --> | *.c, *.S | O3[*.o]
+    libs --> | *.c, *.S | O3
+    O3 --> | ld | P3[bin/kernel]
+    
+    P3 --> RES{ucore.img}
+    Q1 --> RES
+```
+
+
+
+
+
+
 
 
 
