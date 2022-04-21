@@ -1,4 +1,4 @@
-# Lab 1
+# Lab 1-1
 
 > bootloader 启动 OS
 
@@ -377,7 +377,7 @@ movl %eax,x
 
 
 
-## 练习一
+## 练习 1
 
 > 1. 操作系统镜像文件ucore.img是如何一步一步生成的？(需要比较详细地解释Makefile中每一条相关命令和命令参数的含义，以及说明命令导致的结果)
 > 2. 一个被系统认为是符合规范的硬盘主引导扇区的特征是什么？
@@ -388,7 +388,7 @@ movl %eax,x
 * Bootloader 软件
 * ucore OS 软件
 
-### 示例
+### 编译内容
 
 > 基于lab1_result
 
@@ -406,7 +406,9 @@ movl %eax,x
   make V=
   ```
 
-  
+* 
+
+
 
 ### 环境变量
 
@@ -458,6 +460,10 @@ ${<function> <arguments>}
 
 ### Makefile详解
 
+> 参考blog:[ucore_lab1](https://www.cnblogs.com/wuhualong/p/ucore_lab1_exercise1_report.html)
+>
+> 未完待续
+
 * **line-117** : 生成`libs`目录下的`obj`变量名
 
   ```makefile
@@ -478,25 +484,23 @@ ${<function> <arguments>}
 
   3. 
 
-
-
-
-
 * **line-136** :
 
   ```makefile
   $(call add_files_cc,$(call listf_cc,$(KSRCDIR)),kernel,$(KCFLAGS))
   ```
 
-  
 
 
 
 
 
-### Q1 ucore.img 的生成
 
-> 需要`kernel`和`bootblock`
+### Q1
+
+> **ucore.img 的生成：**
+>
+> **需要`kernel`和`bootblock`**
 
 **示意图**
 
@@ -521,33 +525,308 @@ flowchart LR
     Q1 --> RES
 ```
 
+> 依赖关系，摘选自 blog : [ucore-lab1](https://xr1s.me/2018/05/15/ucore-lab1-report/)
+
+![ucore-lab1-dependency-tree](D:\github\OS\thu\images\ucore-lab1-dependency-tree.png)
+
+#### 总结 1
+
+1. 编译libs和kern目录下所有的.c和.S文件，生成.o文件，并链接得到bin/kernel文件
+2. 编译boot目录下所有的.c和.S文件，生成.o文件，并链接得到bin/bootblock.out文件
+3. 编译tools/sign.c文件，得到bin/sign文件
+4. 利用bin/sign工具将bin/bootblock.out文件转化为512字节的bin/bootblock文件，并将bin/bootblock的最后两个字节设置为0x55AA
+5. 为bin/ucore.img分配5000MB的内存空间，并将bin/bootblock复制到bin/ucore.img的第一个block，紧接着将bin/kernel复制到bin/ucore.img第二个block开始的位置
+
+#### 总结 2
+
+1. 第一条线索是针对每个 .c 文件编译出对应的 .o 文件，然后大家一起链接成 bin/kernel 文件。
+
+2. 第二条线索是对于 boot 部分的编译，几个 boot/ 目录下的文件汇编链接成 obj/bootblock.o 之后 `objecopy` 出 raw binary 文件 obj/bootblock.out （这一段写在 Makefile 里，没有用 `$(V)` 直接用了 `@` 所以不会打印出来）。
+
+3. 最后两步是最骚的，通过编译执行一个预先写好的 tools/sign.c 文件，读取整个 obj/bootblock.out ，判断文件大小是不是小于等于 `510` ，如果不是说明构建失败，退出。如果成功则填充 magic number 0xAA55 ，输出到 bin/bootblock 中（这个也是写在 Makefile 中但是没打印出来）。
+
+4. 最后使用 `dd` 命令通过 `/dev/zero/` （提供空字符）在当前目录下创建空文件 `bin/ucore.img`（会先创建空文件夹`bin`，再创建空文件`ucore.img`，并且大小为`10000 KiB`，将两个编译出的文件 bin/bootblock 和 bin/kernel 逐字节拷贝到其中，发现`bin`文件在`labcodes/lab1`中
+
+   ```
+   dd if=/dev/zero of=bin/ucore.img count=10000
+   10000+0 records in
+   10000+0 records out
+   5120000 bytes (5.1 MB) copied, 0.0194264 s, 264 MB/s
+   
+   dd if=bin/bootblock of=bin/ucore.img conv=notrunc
+   1+0 records in
+   1+0 records out
+   512 bytes (512 B) copied, 0.00135004 s, 379 kB/s
+   
+   dd if=bin/kernel of=bin/ucore.img seek=1 conv=notrunc
+   138+1 records in
+   138+1 records out
+   70775 bytes (71 kB) copied, 0.00330386 s, 21.4 MB/s
+   ```
+
+   1. 对`/dev/zero`的解释
+
+      > 详见wiki : [/dev/zero](https://zh.wikipedia.org/wiki//dev/zero)
+
+      * `/dev/zero`在[类UNIX系统](https://zh.wikipedia.org/wiki/类UNIX系统)中是一个特殊的[设备文件](https://zh.wikipedia.org/wiki/设备文件)。`/dev/zero`在被读取时会提供无限的空字符（[ASCII](https://zh.wikipedia.org/wiki/ASCII) NUL, 0x00）。它的典型用法包括用它提供的字符流来覆盖信息，以及产生一个特定大小的空白文件。[BSD](https://zh.wikipedia.org/wiki/BSD)就是通过[mmap](https://zh.wikipedia.org/w/index.php?title=Mmap&action=edit&redlink=1)把`/dev/zero`映射到虚地址空间实现[共享内存](https://zh.wikipedia.org/wiki/共享内存)的。使用[mmap](https://zh.wikipedia.org/w/index.php?title=Mmap&action=edit&redlink=1)将`/dev/zero`映射到一个虚拟的内存空间，这个操作的效果等同于使用一段匿名的内存（没有和任何文件相关）。
+
+      * 创建一个名为foobar、大小为1 [MiB](https://zh.wikipedia.org/wiki/Mebibyte)的文件，以ASCII码为“0”的字符填充：
+
+        ```makefile
+        dd if=/dev/zero of=foobar count=1024 bs=1024
+        ```
+
+      * 清空sda1分区的数据：
+
+        ```makefile
+        # 请不要执行以下指令，除非你试图清除目标分区上的所有资料!
+        dd if=/dev/zero of=/dev/sda1
+        ```
+
+      * 与`/dev/null`类似，`/dev/zero`也可以作为一个数据源或数据池，所有写往`/dev/zero`将返回成功，没有其他影响，`/dev/null`也是一样，但是作为数据池更常用。所有对`/dev/zero`的读操作，将返回请求数目的“NUL”字节。
+
+   2. 关于`dd`命令
+
+      > 详见wiki : [dd](https://zh.wikipedia.org/wiki/Dd_(Unix))
+
+      * **dd**是一个[Unix](https://zh.wikipedia.org/wiki/Unix)和[类Unix](https://zh.wikipedia.org/wiki/类Unix系统)[系统](https://zh.wikipedia.org/wiki/操作系统)上的命令，主要功能为转换和复制文件。
+
+      * 用空字节覆盖文件的前512个字节：
+
+        ```makefile
+        dd if=/dev/zero of=path/to/file bs=512 count=1 conv=notrunc
+        ```
+
+        转换选项`notrunc`意味着不缩减输出文件，也就是说，如果输出文件已经存在，只改变指定的字节，然后退出，并保留输出文件的剩余部分。没有这个选项，`dd`将创建一个512字节长的文件。
+
+      * 在不同的分区中复制磁盘分区到磁盘映像文件中：
+
+        ```makefile
+        dd if=/dev/sdb2 of=partition.image bs=4096 conv=noerror
+        ```
+
+      * 查询`man dd | less` --> `/seek`
+
+        ```
+        45        seek=N skip N obs-sized blocks at start of output
+        ```
+
+        `skip=xxx`是在备份时对`if`后面的部分也就是原文件跳过多少块再开始备份;
+        `seek=xxx`则是在备份时对`of`后面的部分也就是目标文件跳过多少块再开始写。
+
+
+
+### Q2
+
+> **符合规范的硬盘MBR：**
+>
+> **必须恰好 512 字节，且最后两个字节分别是 0x55 和 0xaa，BIOS 只检查这两个字节。**
+
+* 一个被系统认为是符合规范的硬盘主引导扇区的特征有以下几点：
+  \- 磁盘主引导扇区只有512字节
+  \- 磁盘最后两个字节为`0x55AA`
+  \- 由不超过466字节的启动代码和不超过64字节的硬盘分区表加上两个字节的结束符组成
+
+参考答案
+
+    143 从sign.c的代码来看，一个磁盘主引导扇区只有512字节。且
+    144 第510个（倒数第二个）字节是0x55，
+    145 第511个（倒数第一个）字节是0xAA。
+
+具体实现
+
+> 见`tools/sign.c`
 
 
 
 
 
+## 练习 2
+
+> 为了熟悉使用qemu和gdb进行的调试工作，我们进行如下的小练习：
+>
+> 1. 从CPU加电后执行的第一条指令开始，单步跟踪BIOS的执行。
+> 2. 在初始化位置0x7c00设置实地址断点,测试断点正常。
+> 3. 从0x7c00开始跟踪代码运行,将单步跟踪反汇编得到的代码与bootasm.S和 bootblock.asm进行比较。
+> 4. 自己找一个bootloader或内核中的代码位置，设置断点并进行测试。
+
+### Q1
+
+> 通过改写Makefile文件
+>
+> ```makefile
+> debug: $(UCOREIMG)
+> 		$(V)$(TERMINAL) -e "$(QEMU) -S -s -d in_asm -D $(BINDIR)/q.log -parallel stdio -hda $< -serial null"
+> 		$(V)sleep 2
+> 		$(V)$(TERMINAL) -e "gdb -q -tui -x tools/gdbinit"
+> ```
+>
+> * 在调用qemu时增加`-d in_asm -D q.log`参数，便可以将运行的汇编指令保存在q.log中。
+> * 为防止qemu在gdb连接后立即开始执行，删除了tools/gdbinit中的"continue"行。
+
+* 关于`make debug`
+
+  ```makefile
+      218 debug: $(UCOREIMG)
+      219         $(V)$(QEMU) -S -s -parallel stdio -hda $< -serial null &
+      220         $(V)sleep 2
+      221         $(V)$(TERMINAL) -e "gdb -q -tui -x tools/gdbinit"
+  ```
+
+  在`makefile`中定义了`debug`的操作正是启动QEMU、启动Terminal并在其中运行gdb。
+
+  注意到`gdb`调试行涉及的文件是`tools/gdbinit`
+
+  查看`tools/gdbinit`
+
+  ```shell
+  file bin/kernel
+  target remote :1234
+  break kern_init
+  continue
+  ```
+
+* 修改
+
+  Makefile
+
+  > 如上所示
+
+  gdbinit
+
+  > 此时还没有到`kernel`，因此需要把文件改成`bootblock`，在`start`处打断点
+
+  ```
+  set architecture i8086
+  file bin/bootblock
+  target remote :1234
+  break start
+  continue
+  ```
+
+* 调试准备
+
+  首先通过`make debug`指令（注意不是`make qemu`！！！）运行出等待调试的qemu虚拟机，然后再打开一个终端或者在`Xshell 7`中打开窗口连接，通过下述命令连接到`qemu`虚拟机：
+
+  ```
+  gdb
+  target remote 127.0.0.1:1234
+  ```
+
+  **即可连接qemu，此时qemu会进入停止状态，听从gdb的命令。**
+
+  另外，我们可能需要qemu在一开始便进入等待模式，则我们不再使用make qemu开始系统的运行，而使用make debug来完成这项工作。这样qemu便不会在gdb尚未连接的时候擅自运行了。
+
+  在`Xshell 7`中连接调试
+
+  <img src="D:\github\OS\thu\images\lab2-1-xshell-BIOS.png" alt="lab2-1-xshell-BIOS" style="zoom:50%;" />
+
+  `Terminal`窗口此时停在`0x0000fff0`的位置，这是`EIP`寄存器的值，而`CS`寄存器的值为`0xf000`. 
+
+  
+
+* 调试过程
+
+  * 初始查看寄存器的值
+
+    发现`EIP`为 0xfff0, `CS`为 0xf000，此时为实模式
+
+    ```assembly
+    (gdb) info register
+    eax            0x0	0
+    ecx            0x0	0
+    edx            0x663	1635
+    ebx            0x0	0
+    esp            0x0	0x0
+    ebp            0x0	0x0
+    esi            0x0	0
+    edi            0x0	0
+    eip            0xfff0	0xfff0
+    eflags         0x2	[ ]
+    cs             0xf000	61440
+    ss             0x0	0
+    ds             0x0	0
+    es             0x0	0
+    fs             0x0	0
+    gs             0x0	0
+    ```
+
+  * 查看响应地址内容
+
+    ```assembly
+    (gdb) x /2i 0xffff0
+       0xffff0:	ljmp   $0x3630,$0xf000e05b
+       0xffff7:	das    
+    ```
+
+    x：查看相应地址的内容，i：表示查看指令，2i表示查看两条指令
+
+    CPU加电之后第一条指令果然是跳转指令
+
+  * si 执行几步之后发现全是这条汇编指令，也不知道BIOS是咋想的（
+
+    ```assembly
+      0xe08e:	add    %al,(%eax)
+       0xe090:	add    %al,(%eax)
+       0xe092:	add    %al,(%eax)
+       0xe094:	add    %al,(%eax)
+       0xe096:	add    %al,(%eax)
+       0xe098:	add    %al,(%eax)
+       0xe09a:	add    %al,(%eax)
+       0xe09c:	add    %al,(%eax)
+       0xe09e:	add    %al,(%eax)
+       0xe0a0:	add    %al,(%eax)
+       0xe0a2:	add    %al,(%eax)
+       0xe0a4:	add    %al,(%eax)
+       0xe0a6:	add    %al,(%eax)
+    ```
+
+  * 在`0x7c00`打上断点
+
+    ```shell
+    b *0x7c00
+    ```
+
+  * 输入指令`c`就会持续运行到`0x7c00`处停下，此时`EIP`为0x7c00
 
 
 
+### Q2
 
+> 在初始化位置0x7c00设置实地址断点,测试断点正常
 
+由于boot loader的入口为start，其地址为0x7c00，因此这和`break *0x7c00`效果是相同的。所以前面在`tools/gdbinit`中已经在`start`打下断点就不必再在`0x7c00`处打断点了
 
+<img src="D:\github\OS\thu\images\lab2-2-0x7c00.png" alt="lab2-2-0x7c00" style="zoom: 80%;" />
 
+通过比对发现从`0x7c00`开始的汇编代码与`boot/bootasm.S`中的是一致的
 
+反汇编代码（由于是32位环境）编译出来的是`%eax`,而`bootasm.S`中的代码是16位的（实模式），且后者的操作码也是带有位长信息的，如`w(word:2bytes)`或`b(byte)`
 
+### Q3
 
+> Q2已经解决
 
+### Q4
 
+> 无，补充一下`gdb`调试的指令
 
+```
+next 单步到程序源代码的下一行，不进入函数。
+nexti 单步一条机器指令，不进入函数。
+step 单步到下一个不同的源代码行（包括进入函数）。
+stepi 单步一条机器指令。
+```
 
+**关于代码的反汇编**
 
+有可能gdb无法正确获取当前qemu执行的汇编指令，通过如下配置可以在每次gdb命令行前强制反汇编当前的指令，在gdb命令行或配置文件中添加：
 
+```
+define hook-stop
+x/i $pc
+end
+```
 
-
-
-
-
-
-
-
+即可
 
