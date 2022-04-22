@@ -38,31 +38,257 @@
      26     #  For backwards compatibility with the earliest PCs, physical
      27     #  address line 20 is tied low, so that addresses higher than
      28     #  1MB wrap around to zero by default. This code undoes this.
+     注释:
+     25 # 启用 A20:
+     26 # 为了向后兼容最早的 PC，物理
+     27 # 地址线A20系低，以至于地址高于
+     28 # 1MB 默认归零。 此代码撤消了此操作。
 ```
+
+步骤
+
+1. 等待 8042 Input buffer为空 [30]
+2. 发送 Write 8042 Output Port （P2） 命令到8042 Input buffer
+3. 等待 8042 Input buffer为空
+4. 将 8042 Output Port（P2） 对应字节的第2位置1，然后写入8042 Input buffer
 
 然后是第一段`seta20.1`
 
 ```assembly
+循环体 : 等待 8042 input buffer 为 0
      29 seta20.1:
      30     inb $0x64, %al                           # Wait for not busy(8042 input buffer empty).
+     +: 往端口0x64写数据
      31     testb $0x2, %al
+     +: (逻辑与&)测试%al的值
      32     jnz seta20.1
-     33 
+     +: 如果 %al 的从右数第2位为1 跳转回 seta20.1
+     
+
      34     movb $0xd1, %al                          # 0xd1 -> port 0x64
+     +: 先将 0xd1 存入 %al 中
      35     outb %al, $0x64                          # 0xd1 means: write data to 8042's P2 port
+     +: 再将该数据写入 0x64 port
+     
+ 结果 : seta20.1是往端口0x64写数据0xd1，告诉CPU我要往8042芯片的P2端口写数据
 ```
+
+1. `in`和`out`指令
+
+   * 汇编语言中，CPU对外设的操作通过专门的端口读写指令来完成；读端口用IN指令，写端口用OUT指令。
+   * 汇编是直接面向硬件的，它可以访问系统的mem空间，也可以直接访问系统的io空间。汇编中使用in/out来访问系统的io空间。
+
+   ```assembly
+   　　IN AL,21H	
+   　　	+: 表示从21H端口读取一字节数据到AL
+   　　IN AX,21H	
+   　　	+: 表示从端口地址21H读取1字节数据到AL，从端口地址22H读取1字节到AH
+   　　MOV DX,379H
+   　　IN AL,DX 
+   　　	+: 从端口379H读取1字节到AL
+   　　OUT 21H,AL
+   　　	+: 将AL的值写入21H端口
+   　　OUT 21H,AX
+   　　	+: 将AX的值写入端口地址21H开始的连续两个字节。（port[21H]=AL,port[22h]=AH）
+   　　MOV DX,378H
+   　　OUT DX,AX 
+   　　	+: 将AH和AL分别写入端口379H和378H
+   ```
+
+2. `test`指令
+
+   测试一个位
+
+   ```assembly
+   test eax, 100b; b后缀意为二进制
+   jnz **; 如果eax右数第三个位为1,jnz将会跳转
+   ```
+
+   测试一方寄存器是否为空:
+
+   ```assembly
+   test ecx, ecx
+   jz somewhere
+   ```
+
+   如果ecx为零,设置ZF零标志为1,Jz跳转
+
+
 
 第二段`seta20.2`
 
 ```assembly
+循环体 : 等待seta20.2的input buffer为0,目的是确保输入缓冲区为空,这样才能保证后续写操作的有效性
      37 seta20.2:
      38     inb $0x64, %al             # Wait for not busy(8042 input buffer empty).
      39     testb $0x2, %al
      40     jnz seta20.2
-     41 
+
+
      42     movb $0xdf, %al            # 0xdf -> port 0x60
+     +: 将 0xdf 暂时存入 %al中
      43     outb %al, $0x60            # 0xdf = 11011111, means set P2's A20 bit(the 1 bit) to 1
+     +: 写入 0x60 port, 0xdf== 11011111
+     
+结果 : seta20.2是往端口0x60写数据0xdf，从而将8042芯片的P2端口设置为1. 
 ```
+
+
+
+### Q2
+
+#### 初始化GDT表
+
+> `gdtdesc : ...`描述了GDT的 `size` 和 `address`
+>
+> `gdt : ...`描述了GDT的具体内容：null，code，data
+
+依然在`boot/bootasm.S`先看注释
+
+```
+     45     # Switch from real to protected mode, using a bootstrap GDT
+     46     # and segment translation that makes virtual addresses
+     47     # identical to physical addresses, so that the
+     48     # effective memory map does not change during the switch.
+```
+
+
+
+##### GDT加载
+
+```assembly
+     49     lgdt gdtdesc
+```
+
+* `LGDT/LIDT `- 加载全局/中断描述符表格寄存器，LGDT 与LIDT 指令仅用在操作系统软件中；它们不用在应用程序中。在保护模式中，它们是**仅有的能够直接加载线性地址**（即，不是段相对地址）与限制的指令。 它们通常在实地址模式中执行，以便处理器在切换到保护模式之前进行初始化。
+
+  | 操作码   | 指令            | 说明                 |
+  | -------- | --------------- | -------------------- |
+  | 0F 01 /2 | LGDT **m16&32** | 将 **m** 加载到 GDTR |
+  | 0F 01 /3 | LIDT **m16&32** | 将 **m** 加载到 IDTR |
+
+* `lgdt gdtdesc`把全局描述符表的大小和起始地址共**8个字节（64-bit）**加载到全局描述符表寄存器GDTR中
+
+  ```assembly
+       84 gdtdesc:
+       85     .word 0x17                                      # sizeof(gdt) - 1
+       86     .long gdt                                       # address gdt
+  ```
+
+  `gdtdesc`描述了GDT的 `size` 和 `address`
+
+  大小为 sizeof(gdt) = 0x17 + 1 = 0x18 = (24)~10~ bytes = 3 * 8bytes，三项，每一项 8 bytes ( 64-bit )
+
+
+
+##### GDT内容
+
+```assembly
+     77 # Bootstrap GDT
+     78 .p2align 2                                          # force 4 byte alignment
+     79 gdt:
+     80     SEG_NULLASM                                     # null seg
+     +: null 空白项
+     81     SEG_ASM(STA_X|STA_R, 0x0, 0xffffffff)           # code seg for bootloader and kernel
+     +: code segment 可读可执行
+     +: 0 ~ 2**32 (4G)
+     82     SEG_ASM(STA_W, 0x0, 0xffffffff)                 # data seg for bootloader and kernel
+     +: data segment 可写
+```
+
+* 共有3项，每项8字节。
+  * 第1项是空白项，内容为全0. 
+  * 后面2项分别是**代码段**和**数据段**的描述符，它们的base都设置为`0x0`，limit都设置为`0xffffff`，也就是长度均为4G.
+* 由于全局描述符表每项大小为8字节，因此一共有3项，而第一项是空白项，所以全局描述符表中只有两个有效的段描述符，分别对应**代码段**和**数据段**。
+
+##### 查看 SEG_ASM 宏
+
+在`boot/asm.h`中
+
+```C
+     11 #define SEG_ASM(type,base,lim)                                  \
+     12     .word (((lim) >> 12) & 0xffff), ((base) & 0xffff);          \
+     13     .byte (((base) >> 16) & 0xff), (0x90 | (type)),             \
+     14         (0xC0 | (((lim) >> 28) & 0xf)), (((base) >> 24) & 0xff)
+```
+
+
+
+
+
+##### GDT的结构
+
+> **全局描述符表** **(GDT)** 是一个从 [Intel](https://zh.wikipedia.org/wiki/英特尔) [x86](https://zh.wikipedia.org/wiki/X86)-系列处理器 [80286](https://zh.wikipedia.org/wiki/Intel_80286) 开始用于界定不同内存区域的特征的数据结构。 全局描述表位于内存中。全局描述表的条目描述及规定了不同内存分区的各种特征，包括基地址、大小和访问等特权如可执行和可写等。 在 Intel 的术语中，这些内存区域被称为 *[段](https://zh.wikipedia.org/wiki/X86記憶體區段)* 。
+
+! 下图展示了`GDT`每一项的结构
+
+图一 （从右下方往左上方看）
+
+![GDT](D:\github\OS\thu\images\GDT.png)
+
+图二（从右上方往左下方看）
+
+<img src="D:\github\OS\thu\images\GDT_Entry.png" alt="GDT_Entry" style="zoom:80%;" />
+
+* GDT每一项有8字节，也就是 64-bit
+
+* 对于`Access Byte`和`Flags`的结构
+
+  ![Gdt_bits](D:\github\OS\thu\images\Gdt_bits.png)
+
+  * `Access Byte` 中 8 个位的含义：
+
+    - *Ac* 是访问位，只要设置为 0 即可。 CPU 会在第一次访问这个段之后设置为 1 。
+
+    - RW 是读写位：
+      - 对于数据段： 0 表示不可写（只读）， 1 表示可写。数据段永远可读。
+      - 对于代码段： 0 表示不可读（无访问权限）， 1 表示可读。代码段永远不可写。
+
+    - DC位， Direction/Conforming 位：
+      - 对于数据段： 0 表示访问该段的偏移必须要比 Limit 要大（向下增长）， 1 则是要小（向上增长）。
+      - 对于代码段： 1 表示可以被更低运行权限（更大 Privl ）执行， 0 表示只能被同权或更高权限执行。
+
+    - *Ex* 是可执行位： 0 表示该段为数据段， 1 表示该段为代码段。
+
+    - *Privl* 是权限位，占据两个比特。权限位从 0~3 ，越小表示权限越高，最高为 0 。
+
+    - *Pr* 为 Present 位，对于所有可用段必须为 1 。
+
+  * `Flags` 中的 4 个比特含义：
+
+    - *Sz* 是大小位： 0 表示该段运行于 16-bit 保护模式下， 1 表示运行于 32-bit 保护模式下。用于向后兼容。
+
+    - *Gr* 是粒度位： 0 表示 Limit 的单位是 1 Byte ， 1 表示 Limit 的单位是 4 KB （一个页）。
+
+    - *Flags* 中的第 2 个 bit 在 x86-64 中指明为 64 位描述符，此时 Sz 位必须为 0 。
+
+  * 现在` ucore `**只有代码段和数据段**，所以只设置了这两个。
+
+
+
+
+
+### Q3
+
+> 如何使能和进入保护模式
+
+查看代码
+
+```assembly
+     50     movl %cr0, %eax
+     51     orl $CR0_PE_ON, %eax
+     52     movl %eax, %cr0
+```
+
+**将cr0寄存器的PE位（cr0寄存器的最低位）设置为1，便使能和进入保护模式了**
+
+其中 `$CR0_PE_ON`的值的定义
+
+```assembly
+     10 .set CR0_PE_ON,             0x1                     # protected mode enable flag
+```
+
+
 
 
 
@@ -78,6 +304,8 @@
 > - bootloader是如何加载ELF格式的OS？
 >
 > 提示：可阅读“硬盘访问概述”，“ELF执行文件格式概述”这两小节。
+
+
 
 
 
