@@ -6,7 +6,7 @@
 
 ## 练习 3
 
-> BIOS将通过读取硬盘主引导扇区到内存，并转跳到对应内存中的位置执行bootloader。请分析bootloader是如何完成从实模式进入保护模式的。
+> BIOS将通过读取硬盘主引导扇区到内存，并转跳到对应内存中的位置`0x7c00`执行bootloader。请分析bootloader是如何完成从实模式进入保护模式的。
 >
 > 提示：需要阅读**小节“保护模式和分段机制”**和lab1/boot/bootasm.S源码，了解如何从实模式切换到保护模式，需要了解：
 >
@@ -270,7 +270,11 @@
 
 ### Q3
 
-> 如何使能和进入保护模式
+#### Enable protected mode
+
+> **如何使能和进入保护模式**
+>
+> x86 引入了几个新的**控制寄存器 (Control Registers)** `cr0` `cr1` … `cr7` ，每个长 32 位。这其中的某些寄存器的某些位被用来控制 CPU 的工作模式，其中 `cr0` 的最低位，就是用来控制 CPU 是否处于保护模式的。
 
 查看代码
 
@@ -280,7 +284,9 @@
      52     movl %eax, %cr0
 ```
 
-**将cr0寄存器的PE位（cr0寄存器的最低位）设置为1，便使能和进入保护模式了**
+* **将cr0寄存器的PE位（cr0寄存器的最低位）设置为1，便使能和进入保护模式了**
+* 因为控制寄存器不能直接拿来运算，所以需要通过通用寄存器`%eax`来进行一次存取，设置 `cr0` 最低位为 1 之后就已经进入保护模式。
+* 但是最后，由于一些现代 CPU 特性 （乱序执行和分支预测等），在转到保护模式之后 CPU 可能仍然在跑着实模式下的代码，这显然会造成一些问题。因此必须强迫 CPU 清空一次缓冲。对此，最有效的方法就是进行一次 long jump 。
 
 其中 `$CR0_PE_ON`的值的定义
 
@@ -304,6 +310,251 @@
 > - bootloader是如何加载ELF格式的OS？
 >
 > 提示：可阅读“硬盘访问概述”，“ELF执行文件格式概述”这两小节。
+
+### Q1
+
+> bootloader如何读取硬盘扇区
+
+### 硬件访问
+
+> 1. 考虑到实现的简单性，bootloader的访问硬盘都是LBA模式的PIO（Program IO）方式，即**所有的IO操作是通过CPU访问硬盘的IO地址寄存器完成。**
+> 2. 当前硬盘数据是储存到硬盘扇区中，一个扇区大小为512字节。读一个扇区的流程（可参看boot/bootmain.c中的readsect函数实现）大致如下：
+>    1. 等待磁盘准备好
+>    2. 发出读取扇区的命令
+>    3. 等待磁盘准备好
+>    4. 把磁盘扇区数据读到指定内存
+
+* 查看`boot/bootmain.c`
+
+  调用关系
+
+  ```
+  bootmain()
+  :			the entry of bootloader
+  |
+  + --- readseg(uintptr_t va, uint32_t count, uint32_t offset)                 
+  :			read @count bytes at @offset from kernel into virtual address @va, might copy more than 
+  :			asked.
+  |
+  + --- readsect(void *dst, uint32_t secno)
+  :			read a single sector at @secno into @dst
+  ```
+
+  
+
+  先补充一个表：**磁盘IO地址和对应功能**
+
+  >  第6位：为1=LBA模式；0 = CHS模式 第7位和第5位必须为1
+
+  | IO地址 | 功能                                                         |
+  | ------ | ------------------------------------------------------------ |
+  | 0x1f0  | 读数据，当0x1f7不为忙状态时，可以读。                        |
+  | 0x1f2  | 要读写的扇区数，每次读写前，你需要表明你要读写几个扇区。最小是1个扇区 |
+  | 0x1f3  | 如果是LBA模式，就是LBA参数的0-7位                            |
+  | 0x1f4  | 如果是LBA模式，就是LBA参数的8-15位                           |
+  | 0x1f5  | 如果是LBA模式，就是LBA参数的16-23位                          |
+  | 0x1f6  | 第0~3位：如果是LBA模式就是24-27位 第4位：为0主盘；为1从盘    |
+  | 0x1f7  | 状态和命令寄存器。操作时先给命令，再读取，如果不是忙状态就从0x1f0端口读数据 |
+
+  `func : readsect`代码
+
+  ```C
+   43 /* readsect - read a single sector at @secno into @dst */
+   44 static void
+   45 readsect(void *dst, uint32_t secno) {
+   46     // wait for disk to be ready
+   47     waitdisk();
+   48 
+   49     outb(0x1F2, 1);                         // count = 1
+   50     outb(0x1F3, secno & 0xFF);
+   51     outb(0x1F4, (secno >> 8) & 0xFF);
+   52     outb(0x1F5, (secno >> 16) & 0xFF);
+   53     outb(0x1F6, ((secno >> 24) & 0xF) | 0xE0);
+   54     outb(0x1F7, 0x20);                      // cmd 0x20 - read sectors
+   55 
+   56     // wait for disk to be ready
+   57     waitdisk();
+   58 
+   59     // read a sector
+   60     insl(0x1F0, dst, SECTSIZE / 4);
+   61 }
+  ```
+
+  `func : waitdisk`代码 : 
+
+  > 功能：等待磁盘准备好
+  >
+  > 0xC0 = 1100 0000b
+  >
+  > 0x40 = 0100 0000b
+  >
+  > 不断查询读`0x1F7`寄存器的最高两位，直到最高位为0、次高位为1（这个状态应该意味着磁盘空闲）才返回。
+
+  ```C
+       36 /* waitdisk - wait for disk ready */
+       37 static void
+       38 waitdisk(void) {
+       39     while ((inb(0x1F7) & 0xC0) != 0x40)
+       40         /* do nothing */;
+       41 }
+  ```
+
+  发出读取扇区的命令
+
+  ```C
+  outb(0x1F2, 1);                         // count = 1
+  +: 读写的扇区数为1,放在0x1F2寄存器中
+  
+  outb(0x1F3, secno & 0xFF);
+  outb(0x1F4, (secno >> 8) & 0xFF);
+  outb(0x1F5, (secno >> 16) & 0xFF);
+  outb(0x1F6, ((secno >> 24) & 0xF) | 0xE0);
+  +: 读取的扇区起始编号共28位，分成4部分依次放在0x1F3~0x1F6寄存器中。
+  
+  outb(0x1F7, 0x20);                      // cmd 0x20 - read sectors
+  +: 对应的命令字为0x20，放在0x1F7寄存器中
+  ```
+
+  再次等待硬盘空闲
+
+  ```C
+  waitdisk();
+  ```
+
+  把磁盘扇区数据读到指定内存
+
+  ```C
+       33 #define SECTSIZE        512
+       34 #define ELFHDR          ((struct elfhdr *)0x10000)      // scratch space
+  
+       60 insl(0x1F0, dst, SECTSIZE / 4);
+  ```
+
+  * 开始从`0x1F0`寄存器中读数据。
+  * `insl`函数：That function will read cnt dwords from the input port specified by port into the supplied output array addr.
+
+  * `insl`是以dword即4字节为单位的，因此这里SECTIZE需要除以4.
+  * `dst`是函数`readsect(void *dst, uint32_t secno)`的参数
+
+### Q2
+
+> bootloader如何加载OS(ELF 格式)
+>
+> 1. 根据`elfhdr`和`proghdr`的结构描述，bootloader就可以完成对ELF格式的ucore操作系统的加载过程（参见boot/bootmain.c中的bootmain函数）。
+
+查看`bin/kernel`
+
+```shell
+# 当前文件位置: lab1
+file bin/kernel
+bin/kernel: ELF 32-bit LSB  executable, Intel 80386, version 1 (SYSV), statically linked, not stripped
+```
+
+* LSB：Linux标准规范（Linux Standard Base）
+
+#### ELF
+
+* ELF可执行文件类型的`elfhdr`和`proghdr`
+* 定义在<elf.h>文件中
+
+```C
+struct elfhdr {
+  uint magic;  --- must equal ELF_MAGIC
+  uchar elf[12];
+  ushort type;
+  ushort machine;
+  uint version;
+  uint entry;  --- 程序入口的虚拟地址
+  uint phoff;  --- program header 表的位置偏移
+  uint shoff;
+  uint flags;
+  ushort ehsize;
+  ushort phentsize;
+  ushort phnum; --- program header表中的入口数目
+  ushort shentsize;
+  ushort shnum;
+  ushort shstrndx;
+};
+```
+
+* program header描述与程序执行直接相关的目标文件结构信息，用来在文件中定位各个段的映像，同时包含其他一些用来为程序创建进程映像所必需的信息。
+* 可执行文件的程序头部是一个program header结构的数组， 每个结构描述了一个段或者系统准备程序执行所必需的其它信息。目标文件的 “段” 包含一个或者多个 “节区”（section） ，也就是“段内容（Segment Contents）” 。
+* 程序头部仅对于可执行文件和共享目标文件有意义。
+* 可执行目标文件在ELF头部的e_phentsize和e_phnum成员中给出其自身程序头部的大小。程序头部的数据结构如下表所示：
+
+```C
+struct proghdr {
+  uint type;   --- 段类型
+  uint offset;  --- 段相对文件头的偏移值 : 定位文件中该段的位置
+  uint va;     --- 段的第一个字节将被放到内存中的虚拟地址 : 定位段加载到内存中的位置
+  uint pa;
+  uint filesz;
+  uint memsz;  --- 段在内存映像中占用的字节数 : 加载内容的大小
+  uint flags;
+  uint align;
+};
+```
+
+
+
+查看`bootmain()`函数
+
+1. 从硬盘中将`bin/kernel`文件的第一页内容加载到内存地址为`0x10000`的位置，来读取kernel文件的ELF Header信息。
+
+   ```C
+        88     // read the 1st page off disk
+        89     readseg((uintptr_t)ELFHDR, SECTSIZE * 8, 0);
+   ```
+
+   虚拟地址是 0x10000 ，一页是 4 KB 共 8*512 bytes，偏移地址是 0
+
+2. 校验ELF Header的e_magic字段，以确保这是一个ELF文件 `line-91 ~ line-94`
+
+3. 
+
+```C
+     33 #define SECTSIZE        512
+     34 #define ELFHDR          ((struct elfhdr *)0x10000)      // scratch space
+       
+     63 /* *
+     64  * readseg - read @count bytes at @offset from kernel into virtual address @va,
+     65  * might copy more than asked.
+     66  * */
+     67 static void
+     68 readseg(uintptr_t va, uint32_t count, uint32_t offset){...}
+
+     85 /* bootmain - the entry of bootloader */
+     86 void
+     87 bootmain(void) {
+     88     // read the 1st page off disk
+     89     readseg((uintptr_t)ELFHDR, SECTSIZE * 8, 0);
+     90 
+     91     // is this a valid ELF?
+     92     if (ELFHDR->e_magic != ELF_MAGIC) {
+     93         goto bad;
+     94     }
+     95 
+     96     struct proghdr *ph, *eph;
+     97 
+     98     // load each program segment (ignores ph flags)
+     99     ph = (struct proghdr *)((uintptr_t)ELFHDR + ELFHDR->e_phoff);
+    100     eph = ph + ELFHDR->e_phnum;
+    101     for (; ph < eph; ph ++) {
+    102         readseg(ph->p_va & 0xFFFFFF, ph->p_memsz, ph->p_offset);
+    103     }
+    104 
+    105     // call the entry point from the ELF header
+    106     // note: does not return
+    107     ((void (*)(void))(ELFHDR->e_entry & 0xFFFFFF))();
+    108 
+    109 bad:
+    110     outw(0x8A00, 0x8A00);
+    111     outw(0x8A00, 0x8E00);
+    112 
+    113     /* do nothing */
+    114     while (1);
+    115 }
+```
 
 
 
