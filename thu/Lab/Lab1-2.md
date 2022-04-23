@@ -495,9 +495,57 @@ struct proghdr {
 };
 ```
 
+#### `lab1`中的ELF
+
+> 位置：`../lab1/libs/elf.h`
+
+```C
+      1 #ifndef __LIBS_ELF_H__
+      2 #define __LIBS_ELF_H__
+      3 
+      4 #include <defs.h>
+      5 
+      6 #define ELF_MAGIC    0x464C457FU            // "\x7FELF" in little endian
+      7 
+      8 /* file header */
+      9 struct elfhdr {
+     10     uint32_t e_magic;     // must equal ELF_MAGIC
+     11     uint8_t e_elf[12];
+     12     uint16_t e_type;      // 1=relocatable, 2=executable, 3=shared object, 4=core image
+     13     uint16_t e_machine;   // 3=x86, 4=68K, etc.
+     14     uint32_t e_version;   // file version, always 1
+     15     uint32_t e_entry;     // entry point if executable
+     16     uint32_t e_phoff;     // file position of program header or 0
+     17     uint32_t e_shoff;     // file position of section header or 0
+     18     uint32_t e_flags;     // architecture-specific flags, usually 0
+     19     uint16_t e_ehsize;    // size of this elf header
+     20     uint16_t e_phentsize; // size of an entry in program header
+     21     uint16_t e_phnum;     // number of entries in program header or 0
+     22     uint16_t e_shentsize; // size of an entry in section header
+     23     uint16_t e_shnum;     // number of entries in section header or 0
+     24     uint16_t e_shstrndx;  // section number that contains section name strings
+     25 };
+     26 
+     27 /* program section header */
+     28 struct proghdr {
+     29     uint32_t p_type;   // loadable code or data, dynamic linking info,etc.
+     30     uint32_t p_offset; // file offset of segment
+     31     uint32_t p_va;     // virtual address to map segment
+     32     uint32_t p_pa;     // physical address, not used
+     33     uint32_t p_filesz; // size of segment in file
+     34     uint32_t p_memsz;  // size of segment in memory (bigger if contains bss）
+     35     uint32_t p_flags;  // read/write/execute bits
+     36     uint32_t p_align;  // required alignment, invariably hardware page size
+     37 };
+     38 
+     39 #endif /* !__LIBS_ELF_H__ */
+```
 
 
-查看`bootmain()`函数
+
+#### `bootmain()`函数
+
+##### 分析
 
 1. 从硬盘中将`bin/kernel`文件的第一页内容加载到内存地址为`0x10000`的位置，来读取kernel文件的ELF Header信息。
 
@@ -510,7 +558,60 @@ struct proghdr {
 
 2. 校验ELF Header的e_magic字段，以确保这是一个ELF文件 `line-91 ~ line-94`
 
-3. 
+3. 读取ELF Header的e_phoff字段，得到Program Header表的起始地址；读取ELF Header的e_phnum字段，得到Program Header表的元素数目。
+
+   * 关于`uintptr_t`和`intptr_t`
+
+     > 1. 这两个数据类型是ISO C99定义的，具体代码在linux平台的/usr/include/stdint.h头文件中。
+     > 2. 在C语言中，任何类型的指针都可以转换为void *类型，并且在将它转换回原来的类型时不会丢失信息。
+     > 3. 在64位的机器上，intptr_t和uintptr_t分别是`long int`、`unsigned long int`的别名。
+     > 4. 在32位的机器上，intptr_t和uintptr_t分别是`int`、`unsigned int`的别名。
+     > 5. 提高程序的可移植性
+
+     ```C
+     /* Types for `void *' pointers.  */
+     #if __WORDSIZE == 64
+     # ifndef __intptr_t_defined
+     typedef long int		intptr_t;
+     #  define __intptr_t_defined
+     # endif
+     typedef unsigned long int	uintptr_t;
+     #else
+     # ifndef __intptr_t_defined
+     typedef int			intptr_t;
+     #  define __intptr_t_defined
+     # endif
+     typedef unsigned int		uintptr_t;
+     #endif
+     ```
+
+   * 代码
+
+     ```C
+     ph : proghdr的地址
+     eph : proghdr的尾部
+     ```
+
+4. 遍历Program Header表中的每个元素，得到每个Segment在文件中的偏移、要加载到内存中的位置（虚拟地址）及Segment的长度等信息，并通过磁盘I/O进行加载
+
+   * 代码`line-101 ~ line-103`
+
+   * 提示
+
+     ```C
+     readseg(uintptr_t va, uint32_t count, uint32_t offset)                 
+     *** 注释: read @count bytes at @offset from kernel into virtual address @va, might copy more than asked.
+     ```
+
+5. 加载完毕，通过ELF Header的e_entry得到`kernel`的入口地址，并跳转到该地址开始执行内核代码
+
+   ```C
+       105     // call the entry point from the ELF header
+       106     // note: does not return
+       107     ((void (*)(void))(ELFHDR->e_entry & 0xFFFFFF))();
+   ```
+
+##### 代码全貌
 
 ```C
      33 #define SECTSIZE        512
@@ -531,17 +632,22 @@ struct proghdr {
      90 
      91     // is this a valid ELF?
      92     if (ELFHDR->e_magic != ELF_MAGIC) {
-     93         goto bad;
+     93         goto bad;//见最下方异常处理部分
      94     }
      95 
      96     struct proghdr *ph, *eph;
      97 
      98     // load each program segment (ignores ph flags)
      99     ph = (struct proghdr *)((uintptr_t)ELFHDR + ELFHDR->e_phoff);
+       	    +:e_phoff 是 program header 表的位置偏移
+              
     100     eph = ph + ELFHDR->e_phnum;
+            +:e_phnum 是 program header表中的入口数目
+              
     101     for (; ph < eph; ph ++) {
     102         readseg(ph->p_va & 0xFFFFFF, ph->p_memsz, ph->p_offset);
     103     }
+            +:遍历每一个 program header 的元素,从kernel文件p_offset偏移处读取p_memsz bytes到内存p_va
     104 
     105     // call the entry point from the ELF header
     106     // note: does not return
@@ -558,7 +664,183 @@ struct proghdr {
 
 
 
+#### 调试验证准备
 
+* `make debug`进入
+
+* 在文件`bootasm.S`中，71行处有指令
+
+  ```assembly
+      71     call bootmain
+  ```
+
+  也是该文件中**唯一**的一个call指令（便于查找）
+
+* 进入调试后首先`b *0x7c00`进入`bootloader`
+
+* 查看从`0x7c00`开始的若干条指令，找到第一个`call`指令
+
+  ![bootmain_entry](D:\github\OS\thu\images\bootmain_entry.png)
+
+  发现`bootmain`的入口地址为`0x7cd1`（该值与机器相关）
+
+* 在`bootmain`处打断点
+
+  ```shell
+  break *0x7cd1
+  ```
+
+* 进入到`bootmain()`中之后根据`bootmain()`的函数调用次序
+
+  ```
+  + --- bootmain
+  + --- readseg : read the first page of disk
+  + --- for ph:eph {readseg}
+  + --- call kernel entry
+  ```
+
+  看到第一条`call`指令
+
+  ```assembly
+     0x7ce8:	call   0x7c72
+     0x7ced:	cmp    $0x9,%ebx
+  ```
+
+  在下一条指令处`0x7ced`打断点，`continue`之后表示`OS kernel ELF`的第一页内容加载到内存地址为`0x10000`的位置
+
+  验证`magic`子串
+
+  ```assembly
+       10     uint32_t e_magic;     // must equal ELF_MAGIC
+  ```
+
+  结果为
+
+  ```
+  (gdb) x /xw 0x10000
+  0x10000:	0x464c457f
+  ```
+
+  `0x464c45`实际上对应字符串"elf"，最低位的`0x7f`字符对应DEL
+
+#### 验证ELF各个字段
+
+* 验证`ELF`中各个字段
+
+  * `ELF Header`
+
+    由于`bootmain()`中有`ELFHDR + ELFHDR->e_phoff`所以可以查看该地址值（在0x10000附近）
+
+    ```assembly
+       0x7cfe:	mov    0x1001c,%eax
+    ```
+
+    ELF Header的e_phoff字段将加载到eax寄存器，0x1001c相对0x10000的偏移为0x1c，即相差28个字节，这与ELF Header的定义相吻合。
+
+    ```C
+                  9 struct elfhdr {
+     0 +0        10     uint32_t e_magic;     // must equal ELF_MAGIC
+     0 +4        11     uint8_t e_elf[12];
+     4 +1*12     12     uint16_t e_type;      
+    16 +2        13     uint16_t e_machine;   // 3=x86, 4=68K, etc.
+    18 +2        14     uint32_t e_version;   // file version, always 1
+    20 +4        15     uint32_t e_entry;     // entry point if executable
+    24 +4        16     uint32_t e_phoff;     // file position of program header or 0
+    ```
+
+    偏移量正好是`4+12+2+2+4+4 = 28 = 0x1c`
+
+    注意！此处不是立即数赋值，而是将该地址的内容赋值给`%eax`，所以执行完`0x7cfe`后查看`%eax`的值即为`uint32_t e_phoff`即 program header 表的位置偏移
+
+    ```assembly
+    (gdb) info register
+    eax            0x34	52
+    ```
+
+    program header 地址为`0x34`，因此`proghdr`在内存中的位置为 `0x10000 + 0x34 = 0x10034`
+
+  * 查询`0x10034`往后8个字节的内容如下所示：
+
+    ```assembly
+    (gdb) x /8xw 0x10034
+    0x10034:	0x00000001	0x00001000	0x00100000	0x00100000
+    0x10044:	0x0000cfe0	0x0000cfe0	0x00000005	0x00001000
+    ```
+
+    与`proghdr`的各个量对照
+
+    ```C
+    struct proghdr {
+      uint type;   --- 段类型
+      uint offset;  --- 段相对文件头的偏移值 : 定位文件中该段的位置
+      uint va;     --- 段的第一个字节将被放到内存中的虚拟地址 : 定位段加载到内存中的位置
+      uint pa;
+      uint filesz;
+      uint memsz;  --- 段在内存映像中占用的字节数 : 加载内容的大小
+      uint flags;
+      uint align;
+    };
+    ```
+
+    使用`readelf -l bin/kernel`来查询kernel文件各个Segment的基本信息，以作对比。
+
+    ```
+    Elf file type is EXEC (Executable file)
+    Entry point 0x100000
+    There are 3 program headers, starting at offset 52
+    
+    Program Headers:
+      Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+      LOAD           0x001000 0x00100000 0x00100000 0x0cfe0 0x0cfe0 R E 0x1000
+      LOAD           0x00e000 0x0010d000 0x0010d000 0x00a16 0x01d20 RW  0x1000
+      GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RWE 0x10
+    
+     Section to Segment mapping:
+      Segment Sections...
+       00     .text .rodata .stab .stabstr 
+       01     .data .bss 
+    ```
+
+    注意 type = 1即对应 Program Headers 的第一load行，其中的Flag内容上面为0x5 = 101b,即对应
+
+    R(1)W(0)E(1)：可读可执行
+
+  * 紧跟着`0x1002c`即偏移位置为`0x2c = 44`处，
+
+    ```assembly
+       0x7d09:	movzwl 0x1002c,%eax
+    ```
+
+    源代码是，此处涉及参数为`e_phnum`
+
+    ```C
+      100     eph = ph + ELFHDR->e_phnum;
+    ```
+
+    对应`ELF header`，符合
+
+    ```C
+    +28     16     uint32_t e_phoff;     // file position of program header or 0
+    +32     17     uint32_t e_shoff;     // file position of section header or 0
+    +36     18     uint32_t e_flags;     // architecture-specific flags, usually 0
+    +40     19     uint16_t e_ehsize;    // size of this elf header
+    +42     20     uint16_t e_phentsize; // size of an entry in program header
+    +44     21     uint16_t e_phnum;     // number of entries in program header or 0
+    ```
+
+    执行之后，eax为3，这说明一共有3个segment。
+
+    ```assembly
+    => 0x7d09:	movzwl 0x1002c,%eax
+       0x7d10:	shl    $0x5,%eax
+    (gdb) si
+    0x00007d10 in ?? ()
+    (gdb) info r
+    eax            0x3	3
+    ...
+    ```
+
+  * 后面是通过磁盘I/O完成三个Segment的加载，不再赘述。
 
 ## 练习 5
 
