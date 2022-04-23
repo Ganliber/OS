@@ -842,6 +842,10 @@ struct proghdr {
 
   * 后面是通过磁盘I/O完成三个Segment的加载，不再赘述。
 
+
+
+
+
 ## 练习 5
 
 > 实现函数调用堆栈跟踪函数 （需要编程）
@@ -878,6 +882,66 @@ struct proghdr {
 > 补充材料：
 >
 > 由于显示完整的栈结构需要解析内核文件中的调试符号，较为复杂和繁琐。代码中有一些辅助函数可以使用。例如可以通过调用print_debuginfo函数完成查找对应函数名并打印至屏幕的功能。具体可以参见kdebug.c代码中的注释。
+
+### Stack
+
+```
+ + stack bottom direction
+                   >>>>> High address
+                   
+ |  ...            | 
+ |  param 3        |
+ |  param 2        |
+ |  param 1        | 
+ |  ret address    | <--- old old EIP
+                                         ***** grandparent function
+---------------------
+ |  old old ebp    | <--- [old ebp]
+ |  local variable | 
+ |  ...            | 
+ |  ...            |
+ |  param 3        |
+ |  param 2        |
+ |  param 1        |
+ |  ret address    | <--- old EIP [ebp+4]
+                                         ***** parent function
+---------------------
+ |  old ebp        | <--- [ebp]
+ |  local variable | <--- [ebp-4] (in fact, this means ss:[ebp-4])
+ |  ...            |              
+                                         ***** child function
+                   
+                   >>>>> Low address 
+ - stack top direction
+```
+
+* 从该地址为基准，向上（栈底方向）能获取返回地址、参数值，向下（栈顶方向）能获取函数局部变量值，而该地址处又存储着上一层函数调用时的ebp值。
+
+### Code
+
+```C
+void
+print_stackframe(void) {}
+```
+
+注释（提出来了）
+
+```
+     /* LAB1 YOUR CODE : STEP 1 */
+     /* (1) call read_ebp() to get the value of ebp. the type is (uint32_t);
+      * (2) call read_eip() to get the value of eip. the type is (uint32_t);
+      * (3) from 0 .. STACKFRAME_DEPTH
+      *    (3.1) printf value of ebp, eip
+      *    (3.2) (uint32_t)calling arguments [0..4] = the contents in address (unit32_t)ebp +2 [0..4]
+      *    (3.3) cprintf("\n");
+      *    (3.4) call print_debuginfo(eip-1) to print the C calling function name and line number, etc.
+      *    (3.5) popup a calling stackframe
+      *           NOTICE: the calling funciton's return addr eip  = ss:[ebp+4]
+      *                   the calling funciton's ebp = ss:[ebp]
+      */
+```
+
+
 
 
 
