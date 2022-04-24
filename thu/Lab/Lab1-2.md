@@ -900,13 +900,13 @@ struct proghdr {
  |  local variable | 
  |  ...            | 
  |  ...            |
- |  param 3        |
- |  param 2        |
- |  param 1        |
- |  ret address    | <--- old EIP [ebp+4]
+ |  param 3        | =========================================================== ebp[4]
+ |  param 2        | =========================================================== ebp[3]
+ |  param 1        | =========================================================== ebp[2]
+ |  ret address    | <--- old EIP [ebp+4] ====================================== ebp[1]
                                          ***** parent function
----------------------
- |  old ebp        | <--- [ebp]
+---------------------                                             if assume ebp as a pointer(array): 
+ |  old ebp        | <--- [ebp] ================================================ ebp[0]
  |  local variable | <--- [ebp-4] (in fact, this means ss:[ebp-4])
  |  ...            |              
                                          ***** child function
@@ -921,8 +921,59 @@ struct proghdr {
 
 ```C
 void
-print_stackframe(void) {}
+print_stackframe(void) {
+  uint32_t * ebp = 0; // pointer as well as array
+  uint32_t eip = 0;
+  
+  ebp = (uint32_t *) read_ebp();
+  eip = read_eip();
+ 
+  while(ebp)
+  {
+    cprintf("ebp:0x%08x eip:0x%08x args:", (uint32_t)ebp, eip);
+    cprintf("0x%08x 0x%08x 0x%08x 0x%08x\n", ebp[2],ebp[3],ebp[4],ebp[5]);
+    
+    print_debuginfo(eip-1);
+    
+    eip = ebp[1]; // old EIP
+    
+    ebp = (uint32_t*)ebp[0];
+  }
+}
 ```
+
+* 一些语法
+
+  * `printf`
+
+    ```C
+        int PrintVal = 9;
+        /*按整型输出，默认右对齐*/
+        printf("%d\n",PrintVal);
+        /*按整型输出，补齐4位的宽度，补齐位为空格，默认右对齐*/
+        printf("%4d\n",PrintVal);
+        /*按整形输出，补齐4位的宽度，补齐位为0，默认右对齐*/
+        printf("%04d\n",PrintVal);
+    
+        /*按16进制输出，默认右对齐*/   
+        printf("%x\n",PrintVal);
+        /*按16进制输出，补齐4位的宽度，补齐位为空格，默认右对齐*/
+        printf("%4x\n",PrintVal);
+        /*按照16进制输出，补齐4位的宽度，补齐位为0，默认右对齐*/
+        printf("%04x\n",PrintVal);
+    
+        /*按8进制输出，默认右对齐*/
+        printf("%o\n",PrintVal);
+        /*按8进制输出，补齐4位的宽度，补齐位为空格，默认右对齐*/
+        printf("%4o\n",PrintVal);
+        /*按照8进制输出，补齐4位的宽度，补齐位为0，默认右对齐*/
+        printf("%04o\n",PrintVal);
+        
+        --- 补齐8位宽度,补齐位置为0,加上0x,16进制输出 ---
+        int c =16;	printf("c is 0x%08x", c);
+    ```
+
+  * 
 
 注释（提出来了）
 
@@ -941,13 +992,97 @@ print_stackframe(void) {}
       */
 ```
 
+结果
 
+```
+(THU.CST) os is loading ...
 
+Special kernel symbols:
+  entry  0x00100000 (phys)
+  etext  0x001032d5 (phys)
+  edata  0x0010ea16 (phys)
+  end    0x0010fd20 (phys)
+Kernel executable memory footprint: 64KB
+ebp:0x00007b08 eip:0x001009b5 args:0x00010094 0x00000000 0x00007b38 0x00100092
+    kern/debug/kdebug.c:309: print_stackframe+36
+ebp:0x00007b18 eip:0x00100c81 args:0x00000000 0x00000000 0x00000000 0x00007b88
+    kern/debug/kmonitor.c:125: mon_backtrace+10
+ebp:0x00007b38 eip:0x00100092 args:0x00000000 0x00007b60 0xffff0000 0x00007b64
+    kern/init/init.c:48: grade_backtrace2+33
+ebp:0x00007b58 eip:0x001000bb args:0x00000000 0xffff0000 0x00007b84 0x00000029
+    kern/init/init.c:53: grade_backtrace1+38
+ebp:0x00007b78 eip:0x001000d9 args:0x00000000 0x00100000 0xffff0000 0x0000001d
+    kern/init/init.c:58: grade_backtrace0+23
+ebp:0x00007b98 eip:0x001000fe args:0x001032fc 0x001032e0 0x0000130a 0x00000000
+    kern/init/init.c:63: grade_backtrace+34
+ebp:0x00007bc8 eip:0x00100055 args:0x00000000 0x00000000 0x00000000 0x00010094
+    kern/init/init.c:28: kern_init+84
+ebp:0x00007bf8 eip:0x00007d68 args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8
+    <unknow>: -- 0x00007d67 --
+++ setup timer interrupts
+```
 
+* 关注最后一行（终止处）
 
+  > bootasm.S ---> call `bootmain()`  : bootloader ---> call `kern_init()`  : OS kernel
+  >
+  >  在`bootmain.c`中
+  >
+  > ```C
+  >     // call the entry point from the ELF header
+  >     // note: does not return
+  >     ((void (*)(void))(ELFHDR->e_entry & 0xFFFFFF))();
+  > ```
+  >
+  > 也就是调用`kern_init`
 
+  ```
+  --- stack frame graph ---
+  
+    -----------------
+   |                 | 0x7c00 (stack top)
+    -----------------
+   |     ret add     | 0x7bfc : [old EIP]           
+    -----------------
+   |     old ebp     | 0x7bf0 <--- [ebp]
+    -----------------
+   |                 | 
+  ```
 
+  
 
+  * `ebp:0x00007bf8`
+
+    * 此时ebp的值是`kern_init`函数的栈顶地址，从`obj/bootblock.asm`文件中知道整个栈的栈顶地址为0x00007c00，ebp指向的栈位置存放`调用者的ebp寄存器`的值，ebp+4指向的栈位置存放返回地址的值，这意味着kern_init函数的调用者（也就是bootmain函数）没有传递任何输入参数给它！因为单是存放旧的ebp、返回地址已经占用8字节了。
+
+  * ` eip:0x00007d68` 
+
+    * eip的值是`kern_init`函数的`返回地址`，也就是`bootmain`函数调用`kern_init`对应的指令的下一条指令的地址。这与`obj/bootblock.asm`是相符合的。
+
+      ```assembly
+      (gdb) x /10i 0x00007d66
+         0x7d66:	call   *%eax
+         0x7d68:	mov    $0xffff8a00,%eax
+      ```
+
+      注意从不同处截取查看指令是不同的（解读不同）
+
+  * ` args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8`
+
+    * 一般来说，args存放的4个dword是对应4个输入参数的值。但这里比较特殊，由于`bootmain`函数调用kern_init并没传递任何输入参数，并且栈顶的位置恰好在boot loader第一条指令存放的地址的上面，而args恰好是kern_int的ebp寄存器指向的栈顶往上第2~5个单元，因此args存放的就是boot loader指令的前16个字节！可以对比`obj/bootblock.asm`文件来验证（验证时要注意系统是小端字节序）。
+
+      ```assembly
+      00007c00 <start>:
+          7c00:	fa                   	cli    
+          7c01:	fc                   	cld    
+          7c02:	31 c0                	xor    %eax,%eax
+          7c04:	8e d8                	mov    %eax,%ds
+          7c06:	8e c0                	mov    %eax,%es
+          7c08:	8e d0                	mov    %eax,%ss
+          7c0a:	e4 64                	in     $0x64,%al
+          7c0c:	a8 02                	test   $0x2,%al
+          7c0e:	75 fa                	jne    7c0a <seta20.1>
+      ```
 
 ## 练习 6
 
