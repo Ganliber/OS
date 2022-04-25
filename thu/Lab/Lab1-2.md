@@ -1102,11 +1102,77 @@ ebp:0x00007bf8 eip:0x00007d68 args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8
 
 
 
+### 中断分类
+
+* 异步中断 `asynchronous interrupt`
+
+  > 也称外部中断,简称中断`interrupt`
+  >
+  > **由CPU外部设备引起的外部事件如I/O中断、时钟中断、控制台中断等是异步产生的**（即产生的时刻不确定），与CPU的执行无关。
+
+* 同步中断 `synchronous interrupt`
+
+  > 也称内部中断，简称异常`exception`
+  >
+  > 而把**在CPU执行指令期间检测到不正常的或非法的条件**(如除零错、地址访问越界)所引起的内部事件称作同步中断
+
+* 陷入中断`trap interrupt`
+
+  > 也称软中断`soft interrupt`,系统调用`system call`简称`trap`
+  >
+  > 把在**程序中使用请求系统服务的系统调用**而引发的事件，称作陷入中断
+
+### 中断处理
+
+> 1. 本实验只描述**保护模式**下的处理过程
+> 2. 当CPU收到中断（通过`8259A`完成，有关8259A的信息请看附录A）或者异常的事件时，它会暂停执行当前的程序或任务，通过一定的机制跳转到负责处理这个信号的相关处理例程中，在完成对这个事件的处理后再跳回到刚才被打断的程序或任务中。
+> 3. 中断向量和中断服务例程的对应关系主要是由`IDT`（中断描述符表）负责。操作系统在`IDT`中设置好各种中断向量对应的中断描述符，留待CPU在产生中断后查询对应中断服务例程的起始地址。而IDT本身的起始地址保存在`IDTR`寄存器中。
+
+* 中断描述符表（Interrupt Descriptor Table） 
+
+  * 中断描述符表把每个中断或异常编号和一个指向中断服务例程的描述符联系起来。同GDT一样，IDT是一个8字节的描述符数组，但IDT的第一项可以包含一个描述符。CPU把中断（异常）号乘以8做为IDT的索引。IDT可以位于内存的任意位置，CPU通过IDT寄存器（IDTR）的内容来寻址IDT的起始地址。指令LIDT和SIDT用来操作IDTR。两条指令都有一个显示的操作数：一个6字节表示的内存地址。指令的含义如下：
+
+    - LIDT（Load IDT Register）指令：使用一个包含线性地址基址和界限的内存操作数来加载IDT。操作系统创建IDT时需要执行它来设定IDT的起始地址。这条指令只能在特权级0执行。（可参见libs/x86.h中的lidt函数实现，其实就是一条汇编指令）
+
+    - SIDT（Store IDT Register）指令：拷贝IDTR的基址和界限部分到一个内存地址。这条指令可以在任意特权级执行。
+
+  * 在保护模式下，最多会存在256个Interrupt/Exception Vectors。
+
+    * 范围[0，31]内的32个向量被异常Exception和NMI使用，但当前并非所有这32个向量都已经被使用，有几个当前没有被使用的，请不要擅自使用它们，它们被保留，以备将来可能增加新的Exception。
+    * 范围[32，255]内的向量被保留给用户定义的Interrupts。Intel没有定义，也没有保留这些Interrupts。用户可以将它们用作**外部I/O设备中断**`8259A IRQ`或者**系统调用**(`System Call `、`Software Interrupts`等)。
+
+* IDT gate descriptors
+  * 可参见`kern/mm/mmu.h`中的`struct gatedesc`数据结构对中断描述符的具体定义。
+  * 在IDT中，可以包含如下3种类型的Descriptor：
+    - Task-gate descriptor （这里没有使用）
+    - Interrupt-gate descriptor （中断方式用到）
+    - Trap-gate descriptor（系统调用用到）
+  * 用户进程在正常执行中是不能禁止中断的，而当它发出系统调用后，将通过Trap Gate完成了从用户态（ring 3）的用户进程进了核心态（ring 0）的OS kernel。
+* 
 
 
 
 
 
+### Q1
+
+> 中断描述符表（也可简称为保护模式下的中断向量表）中一个表项占多少字节？其中哪几位代表中断处理代码的入口？
+
+
+
+
+
+### Q2
+
+> 请编程完善kern/trap/trap.c中对中断向量表进行初始化的函数idt_init。在idt_init函数中，依次对所有中断入口进行初始化。使用mmu.h中的SETGATE宏，填充idt数组内容。每个中断的入口由tools/vectors.c生成，使用trap.c中声明的vectors数组即可。
+
+
+
+
+
+### Q3
+
+> 请编程完善trap.c中的中断处理函数trap，在对时钟中断进行处理的部分填写trap函数中处理时钟中断的部分，使操作系统每遇到100次时钟中断后，调用print_ticks子程序，向屏幕上打印一行文字”100 ticks”。
 
 
 
