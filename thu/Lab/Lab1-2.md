@@ -1589,7 +1589,7 @@ CPU execute per instruction
 
 ### Q2
 
-> 请编程完善kern/trap/trap.c中对中断向量表进行初始化的函数idt_init。在idt_init函数中，依次对所有中断入口进行初始化。使用mmu.h中的SETGATE宏，填充idt数组内容。每个中断的入口由tools/vectors.c生成，使用trap.c中声明的vectors数组即可。
+> 请编程完善kern/trap/trap.c中对中断向量表进行初始化的函数idt_init。在idt_init函数中，依次对所有中断入口进行初始化。使用`mmu.h`中的`SETGATE`宏，填充idt数组内容。每个中断的入口由tools/vectors.c生成，使用trap.c中声明的vectors数组即可。
 
 * idt_init函数的功能是初始化IDT表。IDT表中每个元素均为**门描述符**，记录一个中断向量的属性，包括中断向量对应的中断处理函数的段选择子/偏移量、门类型（是中断门还是陷阱门）、DPL等。因此，初始化IDT表实际上是初始化每个中断向量的这些属性。
 
@@ -1597,9 +1597,210 @@ CPU execute per instruction
 
   > 除了系统调用的门类型为陷阱门、DPL=3外，其他中断的门类型均为中断门、DPL均为0.
 
-* 
+* 分析`vectors.S`
 
+  * 通过`tail -n 257 vectors.S`查看尾部 257 行（由于有256行中断号 [0...255] ）
 
+    ```assembly
+    __vectors:
+      .long vector0
+      .long vector1
+      .long vector2
+      .long vector3
+      .long vector4
+      .long vector5
+      .long vector6
+      .long vector7
+      .long vector8
+    ...
+    ```
+
+    由此可知，所有中断向量的中断处理函数地址均保存在`__vectors`数组中，该数组中第`i`个元素对应第`i`个中断向量的中断处理函数地址。
+
+  * 通过`head -n 20 vectors.S`查看开头 20 行数据
+
+    ```assembly
+    # handler
+    .text
+    .globl __alltraps
+    .globl vector0
+    vector0:
+      pushl $0
+      pushl $0
+      jmp __alltraps
+    .globl vector1
+    vector1:
+      pushl $0
+      pushl $1
+      jmp __alltraps
+    ```
+
+    可知，中断处理函数属于.text的内容。因此，中断处理函数的段选择子即`.text`的段选择子`GD_KTEXT`
+
+    查看`kern/mm/pmm.c`
+
+    ```C
+    ----- Notes begin -----
+         30  * Global Descriptor Table:
+         31  *
+         32  * The kernel and user segments are identical (except for the DPL). To load
+         33  * the %ss register, the CPL must equal the DPL. Thus, we must duplicate the
+         34  * segments for the user and the kernel. Defined as follows:
+         35  *   - 0x0 :  unused (always faults -- for trapping NULL far pointers)
+         36  *   - 0x8 :  kernel code segment
+         37  *   - 0x10:  kernel data segment
+         38  *   - 0x18:  user code segment
+         39  *   - 0x20:  user data segment
+         40  *   - 0x28:  defined for tss, initialized in gdt_init
+    -----  Notes end  -----
+           
+         42 static struct segdesc gdt[] = {
+         43     SEG_NULL,
+         44     [SEG_KTEXT] = SEG(STA_X | STA_R, 0x0, 0xFFFFFFFF, DPL_KERNEL),
+         45     [SEG_KDATA] = SEG(STA_W, 0x0, 0xFFFFFFFF, DPL_KERNEL),
+         46     [SEG_UTEXT] = SEG(STA_X | STA_R, 0x0, 0xFFFFFFFF, DPL_USER),
+         47     [SEG_UDATA] = SEG(STA_W, 0x0, 0xFFFFFFFF, DPL_USER),
+         48     [SEG_TSS]    = SEG_NULL,
+         49 };
+    ```
+
+    得知`.text`的段基址为0，因此中断处理函数地址的偏移量等于其地址本身。
+
+* 完成IDT表的初始化后，还要使用`lidt`命令将IDT表的起始地址加载到`IDTR`寄存器中。
+
+#### code
+
+注释
+
+```
+     /* LAB1 YOUR CODE : STEP 2 */
+     /* (1) Where are the entry addrs of each Interrupt Service Routine (ISR)?
+      *     All ISR's entry addrs are stored in __vectors. where is uintptr_t __vectors[] ?
+      *     __vectors[] is in kern/trap/vector.S which is produced by tools/vector.c
+      *     (try "make" command in lab1, then you will find vector.S in kern/trap DIR)
+      *     You can use  "extern uintptr_t __vectors[];" to define this extern variable which will be used later.
+      * (2) Now you should setup the entries of ISR in Interrupt Description Table (IDT).
+      *     Can you see idt[256] in this file? Yes, it's IDT! you can use SETGATE macro to setup each item of IDT
+      * (3) After setup the contents of IDT, you will let CPU know where is the IDT by using 'lidt' instruction.
+      *     You don't know the meaning of this instruction? just google it! and check the libs/x86.h to know more.
+      *     Notice: the argument of lidt is idt_pd. try to find it!
+      */
+```
+
+前置代码
+
+```C
+----- Notes begin -----
+     23  * Interrupt descriptor table:
+     24  *
+     25  * Must be built at run time because shifted function addresses can't
+     26  * be represented in relocation records.
+----- Notes end   -----
+       
+     28 static struct gatedesc idt[256] = {{0}};
+     29 
+     30 static struct pseudodesc idt_pd = {
+     31     sizeof(idt) - 1, (uintptr_t)idt
+     32 };
+```
+
+待完成代码
+
+```C
+/* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S */
+void
+idt_init(void) {
+  extern uintptr_t __vectors[];
+  int i;
+  for(i=0; i<sizeof(idt)/sizeof(struct gatedesc); i++) {
+    SETGATE(idt[i], 0, GD_KTEXT, __vectors[i],DPL_KERNEL);
+  }
+  // set for switch from user to kernel, T_SYSCALL == 128
+  SETGATE(idt[T_SYSCALL], 0, GD_KTEXT, __vectors[T_SYSCALL], DPL_USER);
+  
+  //load the IDT
+  lidt(&idt_pd);
+}
+
+```
+
+* 其中，在`kern/mm/mmu.h`中定义了`gatedesc`和`SETGATE`macro(宏)
+
+  ```C
+  /* Gate descriptors for interrupts and traps */
+  struct gatedesc {
+      unsigned gd_off_15_0 : 16;        // low 16 bits of offset in segment
+      unsigned gd_ss : 16;            // segment selector
+      unsigned gd_args : 5;            // # args, 0 for interrupt/trap gates
+      unsigned gd_rsv1 : 3;            // reserved(should be zero I guess)
+      unsigned gd_type : 4;            // type(STS_{TG,IG32,TG32})
+      unsigned gd_s : 1;                // must be 0 (system)
+      unsigned gd_dpl : 2;            // descriptor(meaning new) privilege level
+      unsigned gd_p : 1;                // Present
+      unsigned gd_off_31_16 : 16;        // high bits of offset in segment
+  };
+  ```
+
+* `SETGATE`
+
+  ```C
+  ----- Note -----
+       63  * Set up a normal interrupt/trap gate descriptor
+       64  *   - istrap: 1 for a trap (= exception) gate, 0 for an interrupt gate
+       65  *   - sel: Code segment selector for interrupt/trap handler
+       66  *   - off: Offset in code segment for interrupt/trap handler
+       67  *   - dpl: Descriptor Privilege Level - the privilege level required
+       68  *          for software to invoke this interrupt/trap gate explicitly
+       69  *          using an int instruction.
+  ----- Note -----
+         
+       71 #define SETGATE(gate, istrap, sel, off, dpl) {            \
+       72     (gate).gd_off_15_0 = (uint32_t)(off) & 0xffff;        \
+       73     (gate).gd_ss = (sel);                                \
+       74     (gate).gd_args = 0;                                    \
+       75     (gate).gd_rsv1 = 0;                                    \
+       76     (gate).gd_type = (istrap) ? STS_TG32 : STS_IG32;    \
+       77     (gate).gd_s = 0;                                    \
+       78     (gate).gd_dpl = (dpl);                                \
+       79     (gate).gd_p = 1;                                    \
+       80     (gate).gd_off_31_16 = (uint32_t)(off) >> 16;        \
+       81 }
+  
+  ```
+
+* 宏定义
+
+  > 有些是在`mm/memlayout.h`中定义的
+  >
+  > ```C
+  >      13 /* global descrptor numbers */
+  >      14 #define GD_KTEXT    ((SEG_KTEXT) << 3)        // kernel text
+  >      15 #define GD_KDATA    ((SEG_KDATA) << 3)        // kernel data
+  >      16 #define GD_UTEXT    ((SEG_UTEXT) << 3)        // user text
+  >      17 #define GD_UDATA    ((SEG_UDATA) << 3)        // user data
+  >      18 #define GD_TSS        ((SEG_TSS) << 3)        // task segment selector
+  >      19 
+  >      20 #define DPL_KERNEL    (0)
+  >      21 #define DPL_USER    (3)
+  >      22 
+  >      23 #define KERNEL_CS    ((GD_KTEXT) | DPL_KERNEL)
+  >      24 #define KERNEL_DS    ((GD_KDATA) | DPL_KERNEL)
+  >      25 #define USER_CS        ((GD_UTEXT) | DPL_USER)
+  >      26 #define USER_DS        ((GD_UDATA) | DPL_USER)
+  > 
+  > ```
+
+  对于该函数中的宏定义如下
+
+  ```C
+  #define GD_KTEXT    ((SEG_KTEXT) << 3)        // kernel text
+  #define DPL_KERNEL    (0)
+  #define DPL_USER    (3)
+  #define T_SWITCH_TOK                121    // user/kernel switch
+  static struct gatedesc idt[256] = {{0}};
+  ```
+
+  
 
 
 
