@@ -973,8 +973,6 @@ print_stackframe(void) {
         int c =16;	printf("c is 0x%08x", c);
     ```
 
-  * 
-
 注释（提出来了）
 
 ```
@@ -1102,7 +1100,7 @@ ebp:0x00007bf8 eip:0x00007d68 args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8
 
 
 
-### 中断分类
+### 中断类型分类
 
 * 异步中断 `asynchronous interrupt`
 
@@ -1122,13 +1120,13 @@ ebp:0x00007bf8 eip:0x00007d68 args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8
   >
   > 把在**程序中使用请求系统服务的系统调用**而引发的事件，称作陷入中断
 
-### 中断处理
+### 中断处理概述
 
 > 1. 本实验只描述**保护模式**下的处理过程
 > 2. 当CPU收到中断（通过`8259A`完成，有关8259A的信息请看附录A）或者异常的事件时，它会暂停执行当前的程序或任务，通过一定的机制跳转到负责处理这个信号的相关处理例程中，在完成对这个事件的处理后再跳回到刚才被打断的程序或任务中。
 > 3. 中断向量和中断服务例程的对应关系主要是由`IDT`（中断描述符表）负责。操作系统在`IDT`中设置好各种中断向量对应的中断描述符，留待CPU在产生中断后查询对应中断服务例程的起始地址。而IDT本身的起始地址保存在`IDTR`寄存器中。
 
-* 中断描述符表（Interrupt Descriptor Table） 
+* 中断描述符表（Interrupt Descriptor Table`idt`） 
 
   * 中断描述符表把每个中断或异常编号和一个指向中断服务例程的描述符联系起来。同GDT一样，IDT是一个8字节的描述符数组，但IDT的第一项可以包含一个描述符。CPU把中断（异常）号乘以8做为IDT的索引。IDT可以位于内存的任意位置，CPU通过IDT寄存器（IDTR）的内容来寻址IDT的起始地址。指令LIDT和SIDT用来操作IDTR。两条指令都有一个显示的操作数：一个6字节表示的内存地址。指令的含义如下：
 
@@ -1148,7 +1146,422 @@ ebp:0x00007bf8 eip:0x00007d68 args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8
     - Interrupt-gate descriptor （中断方式用到）
     - Trap-gate descriptor（系统调用用到）
   * 用户进程在正常执行中是不能禁止中断的，而当它发出系统调用后，将通过Trap Gate完成了从用户态（ring 3）的用户进程进了核心态（ring 0）的OS kernel。
-* 
+
+### 中断处理硬件的工作
+
+> 中断服务例程包括具体负责处理中断（异常）的代码是操作系统的重要组成部分。需要注意区别的是，有两个过程由硬件完成：
+
+总处理过程示意图
+
+```
+Notes:
+> summary : 中断向量 
+            --IDT-> 中断描述符:1.[16~31]bit 段选择子(->GDT) 
+                              2.[0~15]bit, [48~63]bit 构成的偏移地址
+            --GDT-> 段描述符:segment base (段基址) 
+            --base:offset-> ISA
+            --ISA-> handle with interrupt
+            
+# Process : exception/interrupt(interrupt vector) ---> IDT ---> GDT ---> ISR
+# IDT : Interrupt Descriptor Table 中断描述符表
+# GDT : Global Descriptor Table 全局描述符表
+# ISR : Interrupt Service Routine 中断服务程序
+# CPL : Current Privilege Level 当前特权级(当前活动代码段的特权级)
+# DPL : Descriptor Privilege Level 描述符特权(段本身真正的特权级)
+
+CPU execute per instruction
+	+ --- check `interrupt controller(8259A)`
+		+ --- interrupt occurs
+			+ beginning
+			|
+			| CPU read interrupt vector from bus
+			| according to interrupt request
+			|
+			+ interrupt vector (as index)
+			|
+			| IDT
+			|
+			+ interrupt descriptor (include `segment selector`)
+			|
+			| GDT
+			|
+			+ segment descriptor (include segment base and other information)
+			|
+			| CPU get starting address of ISA
+			|
+			+ ISA
+			|
+			| 判断是否发生特权级转换 (according to CPL and DPL)
+			| if so, save ss and esp
+			|
+			+ ***Save*** the `interrupted program` scene (eflags, cs, eip, ...) ----+
+			|                                                                       |
+			| CPU load CS:IP from `segment descriptor`                              |
+			|                                                                       |
+			+ executing ISA                                                         |
+			|                                                                       |
+			| ...                                                                   |
+			|                                                                       |
+			+ iret (see details below)                                              |
+			|                                                                       |
+			|                                                                       |
+			|                                                                       |
+			+ ***Resume*** the `interrupted program` scene (eflags, cs, eip, ...) --+
+			
+	*** Attention ***
+			+ iret
+				+ 1.
+				| Resume ...
+				+ 2.
+				| 判断是否发生特权级转换 (according to CPL and DPL)
+			  | if so, resume ss and esp
+			  + 3.(due to ISA)
+			  | popup the errorCode
+			  +
+```
+
+1. 起始
+
+   硬件中断处理过程1（起始）：从CPU收到中断事件后，打断当前程序或任务的执行，根据某种机制跳转到中断服务例程去执行的过程。
+
+   ![interrupt](D:\github\OS\thu\images\interrupt.png)
+
+   - CPU在**执行完当前程序的每一条指令**后，都会去确认在执行刚才的指令过程中中断控制器（如：`8259A`）是否发送中断请求过来，如果有那么CPU就会在相应的时钟脉冲到来时从总线上读取中断请求对应的中断向量；
+   - CPU根据得到的中断向量（以此为索引）到IDT中找到该向量对应的中断描述符，中断描述符里保存着中断服务例程的段选择子；
+   - CPU使用IDT查到的中断服务例程的段选择子从GDT中取得相应的段描述符，段描述符里保存了中断服务例程的段基址和属性信息，此时CPU就得到了中断服务例程的起始地址，并跳转到该地址；
+   - CPU会根据CPL和中断服务例程的段描述符的DPL信息确认**是否发生了特权级的转换**。比如当前程序正运行在用户态，而中断程序是运行在内核态的，则意味着发生了特权级的转换，这时CPU会从当前程序的TSS信息（该信息在内存中的起始地址存在TR寄存器中）里取得该程序的内核栈地址，即包括内核态的ss和esp的值，并立即将系统当前使用的栈切换成新的内核栈。这个栈就是即将运行的中断服务程序要使用的栈。紧接着就将当前程序使用的用户态的ss和esp压到新的内核栈中保存起来；
+   - CPU需要开始保存当前被打断的程序的现场（即一些寄存器的值），以便于将来恢复被打断的程序继续执行。这需要利用内核栈来保存相关现场信息，即依次压入当前被打断程序使用的eflags，cs，eip，errorCode（如果是有错误码的异常）信息；
+   - CPU利用中断服务例程的段描述符将其第一条指令的地址加载到cs和eip寄存器中，开始执行中断服务例程。这意味着先前的程序被暂停执行，中断服务程序正式开始工作。
+
+2. 结束
+
+   硬件中断处理过程2（结束）：每个中断服务例程在有中断处理工作完成后需要通过iret（或iretd）指令恢复被打断的程序的执行。CPU执行IRET指令的具体过程如下：
+
+   - 程序执行这条iret指令时，首先会从内核栈里弹出先前保存的被打断的程序的现场信息，即eflags，cs，eip重新开始执行；
+
+   - 如果存在特权级转换（从内核态转换到用户态），则还需要从内核栈中弹出用户态栈的ss和esp，这样也意味着栈也被切换回原先使用的用户态的栈了；
+
+   - **如果此次处理的是带有错误码（errorCode）的异常，CPU在恢复先前程序的现场时，并不会弹出errorCode。这一步需要通过软件完成，即要求相关的中断服务例程在调用iret返回之前添加出栈代码主动弹出errorCode。**
+
+   - 堆栈切换（通过`TSS`完成）
+
+     ```
+      
+      *** Stack Usage with Privilege-Level Change ***
+     
+      Interrupted Procedure's Stack
+      +-----------------+
+      |                 |        
+      +-----------------+
+      |                 | <--- ESP Before Transfer to Handler
+      +-----------------+
+      |                 | 
+      +-----------------+
+      |                 | 
+      +-----------------+
+      |                 |
+      
+      
+      Handler's Stack
+      +-----------------+
+      |       SS        |        
+      +-----------------+
+      |       ESP       | 
+      +-----------------+
+      |     EFLAGS      | 
+      +-----------------+
+      |       CS        | 
+      +-----------------+
+      |       EIP       |
+      +-----------------+
+      |    Error Code   | <--- ESP After Transfer to Handler
+     ```
+
+### 中断特权级转换
+
+> 中断处理得特权级转换是通过门描述符（gate descriptor）和相关指令来完成的。
+
+1. 一个门描述符就是一个系统类型的段描述符，一共有4个子类型：
+   1. 调用门描述符（call-gate descriptor）
+   2. 中断门描述符（interrupt-gate descriptor）
+   3. 陷阱门描述符（trap-gate descriptor）
+   4. 任务门描述符（task-gate descriptor）
+2. 与中断处理相关的是**中断门描述符**和**陷阱门描述符**。
+3. 这些门描述符被存储在中断描述符表（Interrupt Descriptor Table，简称IDT）当中。
+4. CPU把中断向量作为IDT表项的索引，用来指出当中断发生时使用哪一个门描述符来处理中断。中断门描述符和陷阱门描述符几乎是一样的。
+
+### 分析
+
+* 查看内核初始化的函数`kern/init/init.c::kern_init(void)`
+
+  ```C
+       16 int
+       17 kern_init(void) {
+       18     extern char edata[], end[];
+       19     memset(edata, 0, end - edata);
+       20 
+       21     cons_init();                // init the console
+       22 
+       23     const char *message = "(THU.CST) os is loading ...";
+       24     cprintf("%s\n\n", message);
+       25 
+       26     print_kerninfo();
+       27 
+       28     grade_backtrace();
+       29 
+       30     pmm_init();                 // init physical memory management
+       31 
+       32     pic_init();                 // init interrupt controller
+       33     idt_init();                 // init interrupt descriptor table
+       34 
+       35     clock_init();               // init clock interrupt
+       36     intr_enable();              // enable irq interrupt
+       37 
+       38     //LAB1: CAHLLENGE 1 If you try to do it, uncomment lab1_switch_test()
+       39     // user/kernel mode switch test
+       40     //lab1_switch_test();
+       41 
+       42     /* do nothing */
+       43     while (1);
+       44 }
+  ```
+
+  * `pic_init` : 中断控制器初始化
+
+    * 在文件`kern/driver/picirq.c`中定义，用来初始化一个外设（特殊设备）即8259中断控制器
+    * initialize the 8259A interrupt controllers
+    * 把8259配置好之后，响应的外设就可以产生中断，并被CPU所接受和处理。
+
+  * `idt_init` : 中断描述符表(中断向量表)`IDT`初始化
+
+    * 在文件`kern/trap/trap.c`中定义
+
+  * `clock_init` : 时钟中断
+
+    * ucore 中定义每100 ticks产生一个clock interrupt
+
+    * 关于`tick`
+
+      > 系统时钟也称为时标或者Tick。 一个Tick的时长可以静态配置。 用户是以秒、毫秒为单位计时，而芯片CPU的计时是以Tick为单位的，当用户需要对系统操作时，例如任务挂起、延时等，输入秒为单位的数值，此时需要时间管理模块对二者进行转换。 Tick与秒之间的对应关系可以配置。
+
+  * `intr_enable` : 使能中断
+
+    * 源代码在`kern/driver/intr.c`
+
+      ```C
+            4 /* intr_enable - enable irq interrupt */
+            5 void
+            6 intr_enable(void) {
+            7     sti();
+            8 }
+            9 
+           10 /* intr_disable - disable irq interrupt */
+           11 void
+           12 intr_disable(void) {
+           13     cli();
+           14 }
+      ```
+
+      在`/libs/x86.h`中定义了`sti`和`cli`，其实是两条内联汇编，两条机器指令的含义是
+
+      ```C
+           72 static inline void
+      ...skipping...
+           78 sti(void) {
+           79     asm volatile ("sti");
+           80 }
+           81 
+           82 static inline void
+           83 cli(void) {
+           84     asm volatile ("cli");
+           85 }
+      ```
+
+      * sti : 使能中断
+
+      * cli : 屏蔽中断
+
+        * 注意到从`0x7c00`运行时第一条指令是`cli`，可以在文件`bootasm.S`中查看
+
+          ```assembly
+               16     cli # Disable interrupts
+               17     cld # String operations increment
+          ```
+
+        * 因此一开始`bootloader`启动时是处于中断屏蔽的状态
+
+* 关于`trap.c`函数的实现背景分析
+
+  > 中断服务的入口地址不是`trap`！
+
+  ```C
+      177 /* *
+      178  * trap - handles or dispatches an exception/interrupt. if and when trap() returns,
+      179  * the code in kern/trap/trapentry.S restores the old CPU state saved in the
+      180  * trapframe and then uses the iret instruction to return from the exception.
+      181  * */
+      182 void
+      183 trap(struct trapframe *tf) {
+      184     // dispatch based on what type of trap occurred
+      185     trap_dispatch(tf);
+      186 }
+  ```
+
+  * 关于中断服务的入口地址，可见于`kern/trap/vectors.S`
+
+    > 1. 定义了255个中断号对应的起始地址
+    >
+    > 2. vector.S 文件通过 vectors.c 自动生成，其中定义了每个中断的入口程序和入口地址 (保存在 vectors 数组中)。
+    > 3. 中断可以分成两类：一类是压入错误编码的 (error code)，另一类不压入错误编码。对于第二类， vector.S 自动压入一个 0。（节选中包括了这两类）
+    > 4. 此外，还会压入相应中断的中断号。在压入两个必要的参数之后，中断处理函数跳转到统一的入口 alltraps 处。
+  
+    节选
+  
+    ```assembly
+         39 .globl vector7 
+         40 vector7:
+         41   pushl $0   <--- 不压入error code
+         42   pushl $7
+         43   jmp __alltraps
+         
+         44 .globl vector8  <--- 压入 error code
+         45 vector8:
+         46   pushl $8
+         47   jmp __alltraps
+    
+    ```
+  
+    例如，当产生`98`号中断时，`ucore`产生的`IDT`（中断描述符表）会将CPU的PC指针（即`EIP`的值）指向
+  
+    ```assembly
+    vector98:
+    ```
+  
+    处并开始执行
+  
+    处理入口：`__alltraps`，定义见`trap/trapentry.S`
+  
+    ```assembly
+          6 __alltraps:
+          7     # push registers to build a trap frame
+          8     # therefore make the stack look like a struct trapframe
+          9     pushl %ds
+         10     pushl %es
+         11     pushl %fs
+         12     pushl %gs
+         13     pushal
+         14 
+         15     # load GD_KDATA into %ds and %es to set up data segments for kernel
+         16     movl $GD_KDATA, %eax
+         17     movw %ax, %ds
+         18     movw %ax, %es
+         19 
+         20     # push %esp to pass a pointer to the trapframe as an argument to trap()
+         21     pushl %esp
+         22 
+         23     # call trap(tf), where tf=%esp
+         24     call trap  <------ 调用trap函数
+         25 
+         26     # pop the pushed stack pointer
+         27     popl %esp
+         28 
+         29     # return falls through to trapret...
+    ```
+  
+    产生中断后会保存现场，保存信息储存在`kernel`的中断栈`stack`中
+  
+  * `trap`会进一步调用`trap_dispatch`
+  
+    ```C
+        137 /* trap_dispatch - dispatch based on what type of trap occurred */
+        138 static void
+        139 trap_dispatch(struct trapframe *tf) {
+        140     char c;
+        141 
+        142     switch (tf->tf_trapno) {
+        143     case IRQ_OFFSET + IRQ_TIMER:
+        144         /* LAB1 YOUR CODE : STEP 3 */
+        145         /* handle the timer interrupt */
+        146         /* (1) After a timer interrupt, you should record this event using a global variable (increase it), such as ticks in k    146 ern/driver/clock.c
+        147          * (2) Every TICK_NUM cycle, you can print some info using a funciton, such as print_ticks().
+        148          * (3) Too Simple? Yes, I think so!
+        149          */
+        150         break;
+        151     case IRQ_OFFSET + IRQ_COM1:
+        152         c = cons_getc();
+        153         cprintf("serial [%03d] %c\n", c, c);
+        154         break;
+        155     case IRQ_OFFSET + IRQ_KBD:
+        156         c = cons_getc();
+        157         cprintf("kbd [%03d] %c\n", c, c);
+        158         break;
+        159     //LAB1 CHALLENGE 1 : YOUR CODE you should modify below codes.
+        160     case T_SWITCH_TOU:
+        161     case T_SWITCH_TOK:
+        162         panic("T_SWITCH_** ??\n");
+        163         break;
+        164     case IRQ_OFFSET + IRQ_IDE1:
+        165     case IRQ_OFFSET + IRQ_IDE2:
+        166         /* do nothing */
+        167         break;
+        168     default:
+        169         // in kernel, it must be a mistake
+        170         if ((tf->tf_cs & 3) == 0) {
+        171             print_trapframe(tf);
+        172             panic("unexpected trap in kernel.\n");
+        173         }
+        174     }
+        175 }
+    ```
+  
+    * 关于`IRQ_OFFSET`，`IRQ_TIMER`，`TICK_NUM`的定义
+  
+      file : `trap.h`
+  
+      ```C
+           32 /* Hardware IRQ numbers. We receive these as (IRQ_OFFSET + IRQ_xx) */
+           33 #define IRQ_OFFSET                32    // IRQ 0 corresponds to int IRQ_OFFSET
+           35 #define IRQ_TIMER                0
+      ```
+  
+      file : `trap.c`
+  
+      ```C
+           12 #define TICK_NUM 100
+      ```
+  
+    * 关于`trap_dispatch`中的参数类型`struct trap frame`
+  
+      ```C
+           62 struct trapframe {
+           63     struct pushregs tf_regs;
+           64     uint16_t tf_gs;
+           65     uint16_t tf_padding0;
+           66     uint16_t tf_fs;
+           67     uint16_t tf_padding1;
+           68     uint16_t tf_es;
+           69     uint16_t tf_padding2;
+           70     uint16_t tf_ds;
+           71     uint16_t tf_padding3;
+           72     uint32_t tf_trapno;
+           ++ -------------------------------------------------------------       
+           73     /* below here defined by x86 hardware */
+           74     uint32_t tf_err;
+           75     uintptr_t tf_eip;
+           76     uint16_t tf_cs;
+           77     uint16_t tf_padding4;
+           78     uint32_t tf_eflags;
+                                                                硬件保存
+           ++ -------------------------------------------------------------
+                                                                软件保存
+           79     /* below here only when crossing rings, such as from user to kernel */
+           80     uintptr_t tf_esp;
+           81     uint16_t tf_ss;
+           82     uint16_t tf_padding5;
+                  可能出现从用户产生中断要切换栈(stack)的情形(特权级转换)
+           ++ -------------------------------------------------------------
+           83 } __attribute__((packed));
+      ```
 
 
 
@@ -1158,13 +1571,33 @@ ebp:0x00007bf8 eip:0x00007d68 args:0xc031fcfa 0xc08ed88e 0x64e4d08e 0xfa7502a8
 
 > 中断描述符表（也可简称为保护模式下的中断向量表）中一个表项占多少字节？其中哪几位代表中断处理代码的入口？
 
+<img src="D:\github\OS\thu\images\lab1-6-IDT-and-IDTR.png" alt="lab1-6-IDT-and-IDTR" style="zoom:80%;" />
 
+* 一个表项`8 bytes`
 
+* 结构
+
+  > 1. 其中第[16~31] 位是段选择子，用于索引全局描述符表GDT来获取中断处理代码对应的段地址。
+  >
+  > 2. 再加上第[0~15] 、[48~63]位构成的偏移地址，即可得到中断处理代码的入口。
+
+  * bit 63 ... 48: offset 31..16
+  * bit 47 ... 32: 属性信息，包括DPL、P flag等
+  * bit 31 ... 16: Segment selector
+  * bit 15 ... 0: offset 15..0
 
 
 ### Q2
 
 > 请编程完善kern/trap/trap.c中对中断向量表进行初始化的函数idt_init。在idt_init函数中，依次对所有中断入口进行初始化。使用mmu.h中的SETGATE宏，填充idt数组内容。每个中断的入口由tools/vectors.c生成，使用trap.c中声明的vectors数组即可。
+
+* idt_init函数的功能是初始化IDT表。IDT表中每个元素均为**门描述符**，记录一个中断向量的属性，包括中断向量对应的中断处理函数的段选择子/偏移量、门类型（是中断门还是陷阱门）、DPL等。因此，初始化IDT表实际上是初始化每个中断向量的这些属性。
+
+* 题目已经提供中断向量的门类型和DPL的设置方法：
+
+  > 除了系统调用的门类型为陷阱门、DPL=3外，其他中断的门类型均为中断门、DPL均为0.
+
+* 
 
 
 
