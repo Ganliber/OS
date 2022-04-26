@@ -1292,6 +1292,8 @@ CPU execute per instruction
 
 ### 分析
 
+> 过程：vectors.S中的某个中断号地址 address ---> jmp __alltraps ---> call trap ---> trap_dispatch
+
 * 查看内核初始化的函数`kern/init/init.c::kern_init(void)`
 
   ```C
@@ -1706,17 +1708,21 @@ CPU execute per instruction
 
 待完成代码
 
+> 除了系统调用中断(T_SYSCALL)使用陷阱门描述符且权限为用户态权限以外，其它中断均使用特权级(DPL)为０的中断门描述符，权限为内核态权限；而ucore的应用程序处于特权级３，需要采用｀int 0x80`指令操作（这种方式称为软中断，软件中断，Tra中断，在lab5会碰到）来发出系统调用请求，并要能实现从特权级３到特权级０的转换，所以系统调用中断(T_SYSCALL)所对应的中断门描述符中的特权级（DPL）需要设置为３。
+
 ```C
 /* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S */
 void
 idt_init(void) {
   extern uintptr_t __vectors[];
+  +: 在C99之前,循环变量i必须声明在for(;;){}之外!!!
   int i;
   for(i=0; i<sizeof(idt)/sizeof(struct gatedesc); i++) {
     SETGATE(idt[i], 0, GD_KTEXT, __vectors[i],DPL_KERNEL);
   }
   // set for switch from user to kernel, T_SYSCALL == 128
   SETGATE(idt[T_SYSCALL], 0, GD_KTEXT, __vectors[T_SYSCALL], DPL_USER);
+  +: 第二个参数 : 1->异常 0->中断
   
   //load the IDT
   lidt(&idt_pd);
@@ -1793,14 +1799,16 @@ idt_init(void) {
   对于该函数中的宏定义如下
 
   ```C
-  #define GD_KTEXT    ((SEG_KTEXT) << 3)        // kernel text
-  #define DPL_KERNEL    (0)
-  #define DPL_USER    (3)
-  #define T_SWITCH_TOK                121    // user/kernel switch
-  static struct gatedesc idt[256] = {{0}};
+  	kern/trap/trap.h : #define T_SYSCALL               0x80 // SYSCALL, ONLY FOR THIS PROJ
+  	kern/mm/memlayout.h : #define GD_KTEXT    ((SEG_KTEXT) << 3)        // kernel text
+                          #define DPL_KERNEL    (0)
+  	                      #define DPL_USER    (3)
+  	#define T_SWITCH_TOK                121    // user/kernel switch
+  	static struct gatedesc idt[256] = {{0}};
   ```
-
   
+
+
 
 
 
@@ -1808,9 +1816,42 @@ idt_init(void) {
 
 > 请编程完善trap.c中的中断处理函数trap，在对时钟中断进行处理的部分填写trap函数中处理时钟中断的部分，使操作系统每遇到100次时钟中断后，调用print_ticks子程序，向屏幕上打印一行文字”100 ticks”。
 
+如上
 
 
 
+#### code
+
+```C
+/* trap_dispatch - dispatch based on what type of trap occurred */
+static void
+trap_dispatch(struct trapframe *tf) {
+    char c;
+
+    switch (tf->tf_trapno) {
+    case IRQ_OFFSET + IRQ_TIMER:
+        /* LAB1 YOUR CODE : STEP 3 */
+        /* handle the timer interrupt */
+        /* (1) After a timer interrupt, you should record this event using a global variable (increase it), such as ticks in kern/driver/clock.c
+         * (2) Every TICK_NUM cycle, you can print some info using a funciton, such as print_ticks().
+         * (3) Too Simple? Yes, I think so!
+         */
+        ticks++;
+        if(ticks%TICK_NUM==0) {
+          print_ticks();
+          ticks = 0;
+        }
+        break;
+        ...
+```
+
+* 注意到在`kern/driver/clock.c`的全局区有ticks的声明
+
+  ```C
+       26 volatile size_t ticks;
+  ```
+
+  
 
 
 
