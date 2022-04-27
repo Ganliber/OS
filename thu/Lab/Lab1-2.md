@@ -224,17 +224,17 @@
 
 图一 （从右下方往左上方看）
 
-![GDT](D:\github\OS\thu\images\GDT.png)
+![GDT](D:\github\OS\thu\images\lab1-3_GDT.png)
 
 图二（从右上方往左下方看）
 
-<img src="D:\github\OS\thu\images\GDT_Entry.png" alt="GDT_Entry" style="zoom:80%;" />
+<img src="D:\github\OS\thu\images\lab1-3_GDT_Entry.png" alt="GDT_Entry" style="zoom:80%;" />
 
 * GDT每一项有8字节，也就是 64-bit
 
 * 对于`Access Byte`和`Flags`的结构
 
-  ![Gdt_bits](D:\github\OS\thu\images\Gdt_bits.png)
+  ![Gdt_bits](D:\github\OS\thu\images\lab1-3_Gdt_bits.png)
 
   * `Access Byte` 中 8 个位的含义：
 
@@ -680,7 +680,7 @@ struct proghdr {
 
 * 查看从`0x7c00`开始的若干条指令，找到第一个`call`指令
 
-  ![bootmain_entry](D:\github\OS\thu\images\bootmain_entry.png)
+  ![bootmain_entry](D:\github\OS\thu\images\lab1-4_bootmain_entry.png)
 
   发现`bootmain`的入口地址为`0x7cd1`（该值与机器相关）
 
@@ -1224,7 +1224,7 @@ CPU execute per instruction
 
    硬件中断处理过程1（起始）：从CPU收到中断事件后，打断当前程序或任务的执行，根据某种机制跳转到中断服务例程去执行的过程。
 
-   ![interrupt](D:\github\OS\thu\images\interrupt.png)
+   ![interrupt](D:\github\OS\thu\images\lab1-6_interrupt.png)
 
    - CPU在**执行完当前程序的每一条指令**后，都会去确认在执行刚才的指令过程中中断控制器（如：`8259A`）是否发送中断请求过来，如果有那么CPU就会在相应的时钟脉冲到来时从总线上读取中断请求对应的中断向量；
    - CPU根据得到的中断向量（以此为索引）到IDT中找到该向量对应的中断描述符，中断描述符里保存着中断服务例程的段选择子；
@@ -1845,15 +1845,304 @@ trap_dispatch(struct trapframe *tf) {
         ...
 ```
 
-* 注意到在`kern/driver/clock.c`的全局区有ticks的声明
+* 注意到在`kern/driver/clock.h`的全局区有ticks的声明
 
   ```C
-       26 volatile size_t ticks;
+       6 extern volatile size_t ticks;
   ```
 
   
 
 
+
+### Result
+
+> 每 1s 会发生时钟中断，而且点击键盘也会产生对应的中断
+
+![lab1-6_result](D:\github\OS\thu\images\lab1-6_result.png)
+
+
+
+
+
+## 扩展练习
+
+> 见`blog` : https://xr1s.me/2018/05/15/ucore-lab1-report/
+
+### Challenge 1
+
+> 宏的位置在`trap.h`中（仅针对`lab1`）
+>
+> ```C
+>      43 /* *
+>      44  * These are arbitrarily chosen, but with care not to overlap
+>      45  * processor defined exceptions or interrupt vectors.
+>      46  * */
+>      47 #define T_SWITCH_TOU                120    // user/kernel switch
+>      48 #define T_SWITCH_TOK                121    // user/kernel switch
+> ```
+>
+> 1. 120 : kernel`ring 0` --> user`ring 3`
+> 2. 121 : user`ring 3` --> kernel`ring 0`
+
+#### 要求
+
+> 扩展proj4,增加syscall功能，即增加一用户态函数（可执行一特定系统调用：获得时钟计数值），当内核初始完毕后，可从内核态返回到用户态的函数，而用户态的函数又通过系统调用得到内核态的服务
+
+* kern_init 调用 switch_test，该函数如下：
+
+  ```C
+      static void
+      switch_test(void) {
+          print_cur_status();          // print 当前 cs/ss/ds 等寄存器状态
+          cprintf("+++ switch to  user  mode +++\n");
+          switch_to_user();            // switch to user mode
+          print_cur_status();
+          cprintf("+++ switch to kernel mode +++\n");
+          switch_to_kernel();         // switch to kernel mode
+          print_cur_status();
+      }
+  ```
+
+* switch*to** 函数建议通过 中断处理的方式实现。主要要完成的代码是在 trap 里面处理 T_SWITCH_TO* 中断，并设置好返回的状态。
+
+
+
+#### 分析
+
+1. 我们已经在 `init.c::kern_init` 中利用 `gdt_init` 函数初始化了用户态的 GDT ，切换的时候只需要设**置一下几个段寄存器为用户态寄存器**就好了。
+
+   ```
+   kern_init --call-> pmm_init --call-> gdt_init
+   ```
+
+2. 在中断表中有两个中断， `T_SWITCH_TOU` 和 `T_SWITCH_TOK` ，一个是切换到用户态，另一个是切换回内核态，显然是希望我们通过这两个中断来进行上下文切换。内核已经为我们提供了这两个中段号，我们只需要在` ISR `中设置一下段寄存器。
+
+3. 从用户态切换到内核态需要另外设置中断号使其可以从用户态被中断。(此时需要在`trap.c`中改写)
+
+   ```C
+   // set for switch from user to kernel, T_SYSCALL==128       
+   SETGATE(idt[T_SWITCH_TOK], 0, GD_KTEXT, __vectors[T_SWITCH_TOK], DPL_USER);
+   ```
+
+4. 稍微分析跟踪一下 ISR 的流程，首先在中断表中注册的 vectors 数组中存放着准备参数和跳转到 `__alltraps` 函数的几个指令，在 `__alltraps` （在 kern/trap/trapentry.S 中定义）函数中，将**原来的段寄存器**压栈后作为参数 `struct trapframe *tf` 传递给 `trap_dispatch` ，并在其中分别处理。
+
+   * trapfram 结构体 `trap.h`
+
+     ```C
+          62 struct trapframe {
+          63     struct pushregs tf_regs;
+          64     uint16_t tf_gs;
+          65     uint16_t tf_padding0;
+          66     uint16_t tf_fs;
+          67     uint16_t tf_padding1;
+          68     uint16_t tf_es;
+          69     uint16_t tf_padding2;
+          70     uint16_t tf_ds;
+          71     uint16_t tf_padding3;
+          72     uint32_t tf_trapno;
+          73     /* below here defined by x86 hardware */
+          74     uint32_t tf_err;
+          75     uintptr_t tf_eip;
+          76     uint16_t tf_cs;
+          77     uint16_t tf_padding4;
+          78     uint32_t tf_eflags;
+          79     /* below here only when crossing rings, such as from user to kernel     79  */
+          80     uintptr_t tf_esp;
+          81     uint16_t tf_ss;
+          82     uint16_t tf_padding5;
+          83 } __attribute__((packed));
+     ```
+
+   * __alltraps实现 `trapentry.S`
+
+     ```C
+           1 #include <memlayout.h>
+           2 
+           3 # vectors.S sends all traps here.
+           4 .text
+           5 .globl __alltraps
+     +调用时候
+           6 __alltraps:
+           7     # push registers to build a trap frame
+           8     # therefore make the stack look like a struct trapframe
+           9     pushl %ds
+          10     pushl %es
+          11     pushl %fs
+          12     pushl %gs
+          13     pushal
+          14 
+          15     # load GD_KDATA into %ds and %es to set up data segments for kernel
+          16     movl $GD_KDATA, %eax
+          17     movw %ax, %ds
+          18     movw %ax, %es
+          19 
+          20     # push %esp to pass a pointer to the trapframe as an argument to tr     20 ap()
+          21     pushl %esp
+          22 
+          23     # call trap(tf), where tf=%esp
+          24     call trap  <----------------------处理中断函数
+          25 
+          26     # pop the pushed stack pointer
+          27     popl %esp
+          28 
+          29     # return falls through to trapret...
+     +返回时候
+          30 .globl __trapret
+          31 __trapret:
+          32     # restore registers from stack
+          33     popal
+          34 
+          35     # restore %ds, %es, %fs and %gs
+          36     popl %gs
+          37     popl %fs
+          38     popl %es
+          39     popl %ds
+          40 
+          41     # get rid of the trap number and error code
+          42     addl $0x8, %esp
+          43     iret
+     ```
+
+     
+
+5. 中断处理函数在退出的时候会把这些参数全部 `pop` 回寄存器中，于是**我们可以趁它还在栈上的时候修改其值，在退出中断处理的时候相应的段寄存器就会被更新。**
+
+6. 我们这里只需要在 `case T_SWITCH_TOU:` 和 `case T_SWITCH_TOK:` 两个 case 处添加修改段寄存器的代码即可:
+
+   > 宏
+   >
+   > ```C
+   > filr : mm/memlayout.h
+   >      23 #define KERNEL_CS    ((GD_KTEXT) | DPL_KERNEL)
+   >      24 #define KERNEL_DS    ((GD_KDATA) | DPL_KERNEL)
+   >      25 #define USER_CS        ((GD_UTEXT) | DPL_USER)
+   >      26 #define USER_DS        ((GD_UDATA) | DPL_USER)  
+   > ```
+
+   代码
+
+   ```C
+   --- 临时变量的声明
+       146 /* temporary trapframe or pointer to trapframe */
+       147 struct trapframe switchk2u, *switchu2k;
+     
+   --- 这里有一个坑，在输出的时候，由于 in out 是高权限指令，切换到用户态后跑到这两个指令 CPU 会抛出一般保护性错误（即第 13 号中断）。而源码中在切换至用户态之后还会有两次输出（ lab1_print_cur_status 和 cprintf ），如果不作处理自然再次导致陷入中断，控制流再次进入 trap_dispatch 中。但是这次 T_GPLT 未被处理，所以会落到 default 中打印错误并退出……于是就递归了。
+     
+   --- 从 kernel 转换到 user 的时候设置了 esp (还包括了Challange 2)
+        case IRQ_OFFSET + IRQ_KBD:
+           c = cons_getc();
+           switch(c) {
+           case '0':
+           switch_to_kernel(tf);
+           print_trapframe(tf);
+           break;
+           case '3':
+           switch_to_user(tf);
+           print_trapframe(tf);
+           break;
+           }
+           cprintf("kbd [%03d] %c\n", c, c);
+           break;
+       //LAB1 CHALLENGE 1 : YOUR CODE you should modify below codes.
+       case T_SWITCH_TOU:
+           switch_to_user(tf);
+       case T_SWITCH_TOK:
+           switch_to_kernel(tf);
+           //panic("T_SWITCH_** ??\n");
+           break;
+   ```
+
+   这样的话，只要触发 `T_SWITCH_TOU` 和 `T_SWITCH_TOK` 编号的中断， CPU 指令流就会通过 ISR 执行到这里，并进行内核态和用户态的切换。
+
+7. 接下来只需要在 kern/init/init.c 中开启题目开关，然后实现题目要求的两个函数 `lab1_switch_to_user` 和 `lab1_switch_to_kernel` 。需要另外注意保持栈平衡。
+
+   ```C
+        84 static void
+        85 lab1_switch_to_user(void) {
+        86     //LAB1 CHALLENGE 1 : TODO
+        87         asm volatile (
+        88             "sub $0x8, %%esp \n" --- 切换为user, 栈空间平衡 push ss和esp (由于要切换栈)
+        89             "int %0 \n"
+        90             "movl %%ebp, %%esp" --- 恢复栈
+        91             : 
+        92             : "i"(T_SWITCH_TOU) --- 写入`Input`汇编中即将121 --赋值-> %0处
+          															  --- i表示常数
+        93         );
+        94 }
+        95 
+        96 static void
+        97 lab1_switch_to_kernel(void) {
+        98     //LAB1 CHALLENGE 1 :  TODO
+        99         asm volatile (
+       100             "int %0 \n"
+       101             "movl %%ebp, %%esp \n"
+       102             : 
+       103             : "i"(T_SWITCH_TOK)
+       104         );
+       105 }
+   ```
+   
+
+
+
+#### result
+
+<img src="D:\github\OS\thu\images\lab1-6_finished.png" alt="lab1-6_finished" style="zoom:67%;" />
+
+
+
+### Challenge 2
+
+> 用键盘实现用户模式内核模式切换。具体目标是：“键盘输入3时切换到用户模式，键盘输入0时切换到内核模式”。 基本思路是借鉴软中断(syscall功能)的代码，并且把trap.c中软中断处理的设置语句拿过来。
+
+#### 要求
+
+* 主要是捕获击键，然后调用上面写的两个函数。
+
+* 击键也会触发一个中断，对其的处理在 `trap_dispatch` 的 `IRQ_KBD` case 处，反正返回的就是 ASCII 码，直接判断是不是等于 ‘0’ 或者 ‘3’ 即可。
+
+#### 分析
+
+重构函数（模块化）
+
+```C
+
+/* temporary trapframe */
+struct trapframe switchk2u;
+
+
+static void
+switch_to_user(struct trapframe *tf) {
+
+if (tf->tf_cs != USER_CS) {
+        switchk2u = *tf;
+        switchk2u.tf_cs = USER_CS;
+        switchk2u.tf_ds = switchk2u.tf_es = switchk2u.tf_ss = USER_DS;
+        switchk2u.tf_esp = (uint32_t)tf + sizeof(struct trapframe) - 8;
+
+        // set eflags, make sure ucore can use io under user mode
+        // if CPL > IOPL, then cpu will generate a general protection. 
+        switchk2u.tf_eflags |= FL_IOPL_MASK;
+
+        // set temporary stack
+        // then iret will jump to the right stack
+        *((uint32_t *)tf - 1) = (uint32_t)&switchk2u;
+        }
+}
+
+static void
+switch_to_kernel(struct trapframe *tf) {
+  if ((tf->tf_cs & 3) == 0) return;
+  tf->tf_ds = tf->tf_es = tf->tf_fs = tf->tf_gs = tf->tf_ss = KERNEL_DS;
+  tf->tf_cs = KERNEL_CS;
+  tf->tf_eflags &= ~FL_IOPL_3;
+}
+```
+
+* 结果1，键盘点击3可以触发中断调用切换特权级
+
+![lab1-6_challange_2](D:\github\OS\thu\images\lab1-6_challange_2.png)
 
 
 

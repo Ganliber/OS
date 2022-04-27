@@ -525,7 +525,7 @@ flowchart LR
 
 > 依赖关系，摘选自 blog : [ucore-lab1](https://xr1s.me/2018/05/15/ucore-lab1-report/)
 
-![ucore-lab1-dependency-tree](D:\github\OS\thu\images\ucore-lab1-dependency-tree.png)
+![lab1-1_dependency_tree](D:\github\OS\thu\images\lab1-1_dependency_tree.png)
 
 #### 总结 1
 
@@ -717,11 +717,9 @@ flowchart LR
 
   在`Xshell 7`中连接调试
 
-  <img src="D:\github\OS\thu\images\lab2-1-xshell-BIOS.png" alt="lab2-1-xshell-BIOS" style="zoom:50%;" />
+  <img src="D:\github\OS\thu\images\lab1-2_xshell-BIOS.png" alt="lab1-2_xshell-BIOS" style="zoom:67%;" />
 
   `Terminal`窗口此时停在`0x0000fff0`的位置，这是`EIP`寄存器的值，而`CS`寄存器的值为`0xf000`. 
-
-  
 
 * 调试过程
 
@@ -795,7 +793,7 @@ flowchart LR
 
 由于boot loader的入口为start，其地址为0x7c00，因此这和`break *0x7c00`效果是相同的。所以前面在`tools/gdbinit`中已经在`start`打下断点就不必再在`0x7c00`处打断点了
 
-<img src="D:\github\OS\thu\images\lab2-2-0x7c00.png" alt="lab2-2-0x7c00" style="zoom: 80%;" />
+<img src="D:\github\OS\thu\images\lab1-2-0x7c00.png" alt="lab1-2-0x7c00" style="zoom: 80%;" />
 
 通过比对发现从`0x7c00`开始的汇编代码与`boot/bootasm.S`中的是一致的
 

@@ -83,7 +83,7 @@
 >
 >    5. CS和DS结构图
 >
->       ![DS_and_CS_structure_graph](D:\github\OS\thu\images\DS_and_CS_structure_graph.png)
+>       ![DS_and_CS_structure_graph](D:\github\OS\thu\images\lab1-1_DS_and_CS_structure_graph.png)
 >
 >       代码段寄存器中的CPL`Current Privilege Level`（当前特权级）字段（2位）的值总是等于CPU的当前特权级，所以只要看一眼CS中的CPL，你就可以知道此刻的特权级了。
 >
