@@ -214,8 +214,6 @@
 
 
 
-
-
 ##### GDT的结构
 
 > **全局描述符表** **(GDT)** 是一个从 [Intel](https://zh.wikipedia.org/wiki/英特尔) [x86](https://zh.wikipedia.org/wiki/X86)-系列处理器 [80286](https://zh.wikipedia.org/wiki/Intel_80286) 开始用于界定不同内存区域的特征的数据结构。 全局描述表位于内存中。全局描述表的条目描述及规定了不同内存分区的各种特征，包括基地址、大小和访问等特权如可执行和可写等。 在 Intel 的术语中，这些内存区域被称为 *[段](https://zh.wikipedia.org/wiki/X86記憶體區段)* 。
